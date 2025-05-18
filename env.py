@@ -264,5 +264,10 @@ class VacuumEnv(gym.Env):
         ax.imshow(grid_image, cmap=cmap, norm=norm)
         ax.set_title(f"Agent @ {self.agent_pos}, facing {self.agent_orient}")
         ax.axis("off")
-        return fig
+
+        fig.canvas.draw()
+        img = np.asarray(fig.canvas.buffer_rgba())
+        plt.close(fig)
+
+        return img
 

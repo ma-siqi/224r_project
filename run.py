@@ -81,7 +81,7 @@ def generate_1b1b_layout_grid():
     return list(wall_positions)
 
 def rollout_and_record(env, model, filename="vacuum_run.mp4", max_steps=100):
-    obs, _ = env.reset(options={"walls": walls})
+    obs, _ = env.reset()
     frames = []
 
     for _ in range(max_steps):
@@ -96,30 +96,35 @@ def rollout_and_record(env, model, filename="vacuum_run.mp4", max_steps=100):
 
     # Save animation
     fig, ax = plt.subplots()
-    ims = []
-    for f in frames:
-        f.canvas.draw()
-        im = plt.imshow(np.asarray(f.canvas.buffer_rgba()), animated=True)
-        ims.append([im])
-        plt.close(f)
+    im = ax.imshow(frames[0])
+    ax.axis("off")
 
-    ani = animation.ArtistAnimation(fig, ims, interval=300, blit=True)
+    def update(i):
+        im.set_array(frames[i])
+        return [im]
+
+    ani = animation.FuncAnimation(
+        fig, update, frames=len(frames), interval=100, blit=True
+    )
+
     ani.save(filename, writer="ffmpeg")
+    plt.close(fig)
     print(f"Video saved to {filename}")
 
 ###########################Train PPO#####################################
-"""
+
 env = gym.make("VacuumEnv-v0", grid_size=(40, 30), render_mode="plot")
 
-obs, info = env.reset(options={"walls": walls})
+obs, info = env.reset()
 
 # Training the PPO
 check_env(env, warn=True)  # optional: validate compatibility
 model = PPO("MultiInputPolicy", env, verbose=1)
 model.learn(total_timesteps=500000)
-rollout_and_record(env.unwrapped, model, filename="ppo_vacuum.mp4", max_steps=50000)
-"""
+rollout_and_record(env.unwrapped, model, filename="ppo_vacuum.mp4", max_steps=10000)
+
 ###########################Train DQN#####################################
+"""
 walls = generate_1b1b_layout_grid()
 eval_env = gym.make("VacuumEnv-v0", grid_size=(40, 30), render_mode="plot")
 eval_env = Monitor(eval_env)
@@ -143,3 +148,4 @@ model = DQN("MultiInputPolicy", env, verbose=1)
 model.learn(total_timesteps=1000, callback=eval_callback)
 
 rollout_and_record(env.unwrapped, model, filename="dqn_vacuum.mp4")
+"""
