@@ -25,7 +25,7 @@ import matplotlib.animation as animation
 register(
     id="VacuumEnv-v0",
     entry_point="env:VacuumEnv",
-    kwargs={"grid_size": (40, 30), 
+    kwargs={"grid_size": (20, 20), 
     "render_mode": "plot"},
 )
 
@@ -113,20 +113,22 @@ def rollout_and_record(env, model, filename="vacuum_run.mp4", max_steps=100):
 
 ###########################Train PPO#####################################
 
-env = gym.make("VacuumEnv-v0", grid_size=(40, 30), render_mode="plot")
-
-obs, info = env.reset()
+env = gym.make("VacuumEnv-v0", grid_size=(20, 20), render_mode="plot")
+walls = []
+obs, info = env.reset(options={"walls": walls})
+#env.render()
 
 # Training the PPO
-check_env(env, warn=True)  # optional: validate compatibility
+check_env(env, warn=True)
 model = PPO("MultiInputPolicy", env, verbose=1)
 model.learn(total_timesteps=500000)
 rollout_and_record(env.unwrapped, model, filename="ppo_vacuum.mp4", max_steps=10000)
 
 ###########################Train DQN#####################################
 """
-walls = generate_1b1b_layout_grid()
-eval_env = gym.make("VacuumEnv-v0", grid_size=(40, 30), render_mode="plot")
+#walls = generate_1b1b_layout_grid()
+walls = []
+eval_env = gym.make("VacuumEnv-v0", grid_size=(20, 20), render_mode="plot")
 eval_env = Monitor(eval_env)
 eval_env.reset(options={"walls": walls})
 
@@ -141,11 +143,11 @@ eval_callback = EvalCallback(
     verbose=1,
 )
 
-env = gym.make("VacuumEnv-v0", grid_size=(40, 30), render_mode="plot")
+env = gym.make("VacuumEnv-v0", grid_size=(20, 20), render_mode="plot")
 obs, info = env.reset(options={"walls": walls})
 
 model = DQN("MultiInputPolicy", env, verbose=1)
-model.learn(total_timesteps=1000, callback=eval_callback)
+model.learn(total_timesteps=5000, callback=eval_callback)
 
 rollout_and_record(env.unwrapped, model, filename="dqn_vacuum.mp4")
 """

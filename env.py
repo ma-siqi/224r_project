@@ -15,7 +15,7 @@ class VacuumEnv(gym.Env):
         penalty_forward=-0.1,
         penalty_rotation=-0.05,
         penalty_invalid_move=-1.0,
-        reward_return_home=10.0,
+        reward_return_home=100.0,
         penalty_delay_return=-0.05,
         render_mode=None
     ):
@@ -58,8 +58,8 @@ class VacuumEnv(gym.Env):
         walls = options.get("walls") if options else None
         if walls is not None:
             self.add_wall(walls)
-        else:
-            self.generate_random_rooms()
+        #else:
+        #    self.generate_random_rooms()
 
         self.agent_pos = list(self.start_pos)
         self.agent_orient = 2
@@ -174,11 +174,11 @@ class VacuumEnv(gym.Env):
 
         # terminate if get stuck
         if self.stay_counter >= 5:
-            reward += -2.0
-        if self.stay_counter >= 10:
             reward += -5.0
-        if self.stay_counter >= 20:
+        if self.stay_counter >= 10:
             reward += -10.0
+        if self.stay_counter >= 20:
+            reward += -40.0
             #terminated = True
             #print("Terminated: Agent stayed in place too long.")
 
