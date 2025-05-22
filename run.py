@@ -1,6 +1,7 @@
 import gymnasium as gym
 from gymnasium.envs.registration import register
-from env import VacuumEnv  # your custom class
+from env import VacuumEnv
+from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper
 from gymnasium import spaces
 
 import numpy as np
@@ -21,7 +22,9 @@ from stable_baselines3.common.monitor import Monitor
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
-# Register the environment
+# --------------------------------------
+# Register the robot vacuum environment
+# --------------------------------------
 register(
     id="VacuumEnv-v0",
     entry_point="env:VacuumEnv",
@@ -29,6 +32,9 @@ register(
     "render_mode": "plot"},
 )
 
+# --------------------------------------
+# Fixed wall layout generator
+# --------------------------------------
 def generate_1b1b_layout_grid():
     wall_positions = set()
 
@@ -80,6 +86,9 @@ def generate_1b1b_layout_grid():
 
     return list(wall_positions)
 
+# --------------------------------------
+# Rollout and save animation
+# --------------------------------------
 def rollout_and_record(env, model, filename="vacuum_run.mp4", max_steps=100):
     obs, _ = env.reset()
     frames = []
@@ -111,43 +120,82 @@ def rollout_and_record(env, model, filename="vacuum_run.mp4", max_steps=100):
     plt.close(fig)
     print(f"Video saved to {filename}")
 
-###########################Train PPO#####################################
 
-env = gym.make("VacuumEnv-v0", grid_size=(20, 20), render_mode="plot")
-walls = []
-obs, info = env.reset(options={"walls": walls})
-#env.render()
+if __name__ == "__main__":
+    # --------------------------------------
+    # PPO Training with wrappers and Monitor
+    # --------------------------------------
+    base_env = gym.make("VacuumEnv-v0", grid_size=(20, 20), render_mode="plot")
+    base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
+    base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
 
-# Training the PPO
-check_env(env, warn=True)
-model = PPO("MultiInputPolicy", env, verbose=1)
-model.learn(total_timesteps=500000)
-rollout_and_record(env.unwrapped, model, filename="ppo_vacuum.mp4", max_steps=10000)
+    # monitor for stats logging
+    monitored_env = Monitor(base_env)
 
-###########################Train DQN#####################################
-"""
-#walls = generate_1b1b_layout_grid()
-walls = []
-eval_env = gym.make("VacuumEnv-v0", grid_size=(20, 20), render_mode="plot")
-eval_env = Monitor(eval_env)
-eval_env.reset(options={"walls": walls})
+    # evaluation environment
+    eval_env = gym.make("VacuumEnv-v0", grid_size=(20, 20), render_mode="plot")
+    eval_env = ExplorationBonusWrapper(eval_env, bonus=0.3)
+    eval_env = ExploitationPenaltyWrapper(eval_env, time_penalty=-0.002, stay_penalty=-0.1)
+    eval_env = Monitor(eval_env)
 
-eval_callback = EvalCallback(
-    eval_env,
-    best_model_save_path="./logs/",
-    log_path="./logs/",
-    eval_freq=1000,
-    n_eval_episodes=5,
-    deterministic=True,
-    render=False,
-    verbose=1,
-)
+    # reset before training
+    # call walls = generate_1b1b_layout_grid() to generate fixed wall layout
+    walls = None
+    obs, info = monitored_env.reset(options={"walls": walls})
+    check_env(monitored_env, warn=True)
 
-env = gym.make("VacuumEnv-v0", grid_size=(20, 20), render_mode="plot")
-obs, info = env.reset(options={"walls": walls})
+    # PPO agent
+    model = PPO(
+        "MultiInputPolicy",
+        monitored_env,
+        verbose=1,
+        ent_coef=0.01,
+        tensorboard_log="./tensorboard/",
+    )
 
-model = DQN("MultiInputPolicy", env, verbose=1)
-model.learn(total_timesteps=5000, callback=eval_callback)
+    model.learn(total_timesteps=500000)
 
-rollout_and_record(env.unwrapped, model, filename="dqn_vacuum.mp4")
-"""
+    # Save the final trajectory
+    print("Saving final training trajectory...")
+    rollout_and_record(monitored_env.unwrapped, model, filename="ppo_vacuum_run.mp4", max_steps=1000)
+
+    # Save best eval trajectory
+    print("Saving best eval trajectory...")
+    rollout_and_record(eval_env.unwrapped, model, filename="ppo_eval.mp4", max_steps=1000)
+
+    # --------------------------------------
+    # DQN Training with wrappers and Monitor
+    # --------------------------------------
+    base_env = gym.make("VacuumEnv-v0", grid_size=(20, 20), render_mode="plot")
+    base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
+    base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
+    monitored_env = Monitor(base_env)
+
+    eval_env = gym.make("VacuumEnv-v0", grid_size=(20, 20), render_mode="plot")
+    eval_env = ExplorationBonusWrapper(eval_env, bonus=0.3)
+    eval_env = ExploitationPenaltyWrapper(eval_env, time_penalty=-0.002, stay_penalty=-0.1)
+    eval_env = Monitor(eval_env)
+
+    walls = None
+    obs, info = monitored_env.reset(options={"walls": walls})
+    check_env(monitored_env, warn=True)
+
+    # DQN agent
+    dqn_model = DQN(
+        "MultiInputPolicy",
+        monitored_env,
+        verbose=1,
+        tensorboard_log="./tensorboard_dqn/",
+        exploration_fraction=0.1,
+        exploration_final_eps=0.05,
+    )
+
+    dqn_model.learn(total_timesteps=500000)
+
+    # Save final training trajectory
+    print("Saving final DQN training trajectory...")
+    rollout_and_record(monitored_env.unwrapped, dqn_model, filename="dqn_vacuum_run.mp4", max_steps=1000)
+
+    # Save evaluation trajectory
+    print("Saving best DQN eval trajectory...")
+    rollout_and_record(eval_env.unwrapped, dqn_model, filename="dqn_eval.mp4", max_steps=1000)
