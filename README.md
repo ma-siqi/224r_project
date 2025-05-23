@@ -9,8 +9,10 @@ This project implements deep reinforcement learning algorithms (e.g., PPO, Rainb
 ```bash
 conda create -n cs224r_project python=3.10 -y
 conda activate cs224r_project
+```
+2. **Install project dependencies**
 
-2. ** Install project dependencies
+```bash
 pip install -r requirements.txt
 ````
 
