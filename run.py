@@ -238,7 +238,7 @@ if __name__ == "__main__":
         # --------------------------------------
         # DQN Training with wrappers and Monitor
         # --------------------------------------
-        max_steps = 1000
+        max_steps = 500
 
         base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot")
         base_env = TimeLimit(base_env, max_episode_steps=max_steps)
@@ -268,12 +268,12 @@ if __name__ == "__main__":
 
         model.learn(
             total_timesteps=total_timesteps,
-            callback=DQNLoggingCallback(verbose=1, log_freq=5000),
+            callback=DQNLoggingCallback(verbose=1, log_freq=10000),
             log_interval=1,
         )
 
         print("Saving DQN training trajectory...")
-        rollout_and_record(monitored_env.unwrapped, model, filename="dqn_train.mp4", max_steps=max_steps)
+        rollout_and_record(monitored_env.unwrapped, model, filename="dqn_train.mp4", max_steps=1000)
 
         print("Saving DQN eval trajectory...")
-        rollout_and_record(eval_env.unwrapped, model, filename="dqn_eval.mp4", max_steps=max_steps)
+        rollout_and_record(eval_env.unwrapped, model, filename="dqn_eval.mp4", max_steps=1000)

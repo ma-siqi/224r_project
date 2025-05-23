@@ -83,7 +83,7 @@ def ppo_objective(trial):
     return mean_reward
 
 def dqn_objective(trial):
-    env_fn = make_env(grid_size=(20, 20), use_layout=False)
+    env_fn = make_env(grid_size=(40, 30), use_layout=True)
     env = env_fn()
     eval_env = env_fn()
 
