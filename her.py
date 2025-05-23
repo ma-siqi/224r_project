@@ -6,9 +6,6 @@ from stable_baselines3.common.monitor import Monitor
 from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper
 from gymnasium.wrappers import TimeLimit
 
-from env import VacuumEnv
-from run import generate_1b1b_layout_grid
-
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np

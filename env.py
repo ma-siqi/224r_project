@@ -59,6 +59,7 @@ class VacuumEnv(gym.Env):
         self.cleaned_map = np.zeros(self.grid_size, dtype=np.uint8)
         self.dirt_map = np.ones(self.grid_size, dtype=np.uint8)
         self.obstacle_map = np.zeros(self.grid_size, dtype=np.uint8)
+
         walls = options.get("walls") if options else None
         if walls is not None:
             self.add_wall(walls)

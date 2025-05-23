@@ -6,6 +6,7 @@ from gymnasium import spaces
 from env import VacuumEnv
 from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper
 from her import VacuumGoalWrapper, HerReplayBufferForDQN
+from eval import MetricWrapper, MetricCallback, evaluate_random_agent, RandomAgent
 
 import numpy as np
 import json
@@ -165,7 +166,7 @@ if __name__ == "__main__":
     # Parse command-line arguments
     # ------------------------------
     parser = argparse.ArgumentParser(description="Train PPO or DQN on VacuumEnv")
-    parser.add_argument("--algo", choices=["ppo", "dqn"], default="ppo", help="RL algorithm to run")
+    parser.add_argument("--algo", choices=["ppo", "dqn", "her", "random"], default="ppo", help="RL algorithm to run")
     parser.add_argument("--timesteps", type=int, default=500_000, help="Number of training timesteps")
     parser.add_argument("--grid_size", type=int, nargs=2, default=[20, 20],
                         help="Grid size as two integers (e.g., 40 30)")
@@ -201,6 +202,7 @@ if __name__ == "__main__":
         base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
 
         # monitor for stats logging
+        base_env = MetricWrapper(base_env)
         monitored_env = Monitor(base_env)
 
         # evaluation environment
@@ -208,6 +210,7 @@ if __name__ == "__main__":
         eval_env = TimeLimit(eval_env, max_episode_steps=max_steps)
         eval_env = ExplorationBonusWrapper(eval_env, bonus=0.3)
         eval_env = ExploitationPenaltyWrapper(eval_env, time_penalty=-0.002, stay_penalty=-0.1)
+        base_env = MetricWrapper(base_env)
         eval_env = Monitor(eval_env)
 
         # reset before training
@@ -225,7 +228,10 @@ if __name__ == "__main__":
             **best_params
         )
 
-        model.learn(total_timesteps=total_timesteps)
+        model.learn(
+            total_timesteps=total_timesteps,
+            callback=MetricCallback(),
+            )
 
         # Save the final trajectory
         print("Saving PPO training trajectory...")
@@ -234,6 +240,28 @@ if __name__ == "__main__":
         # Save best eval trajectory
         print("Saving PPO eval trajectory...")
         rollout_and_record(eval_env.unwrapped, model, filename="ppo_eval.mp4", max_steps=max_steps)
+
+    elif algo == "random":
+        # ---------------
+        # Random baseline
+        # ---------------
+        max_steps = 2000
+        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot")
+        base_env = TimeLimit(base_env, max_episode_steps=max_steps)
+        base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
+        base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
+
+        # monitor for stats logging
+        base_env = MetricWrapper(base_env)
+
+        # reset before training
+        obs, _ = base_env.reset(options={"walls": walls})
+        check_env(base_env, warn=True)
+
+        # evaluate the random agent
+        random_agent = RandomAgent(base_env.action_space)
+        metrics = evaluate_random_agent(base_env, random_agent, max_steps=max_steps)
+        rollout_and_record(base_env.unwrapped, random_agent, filename="random_agent.mp4", max_steps=max_steps)
 
     elif algo == "dqn":
         # --------------------------------------
