@@ -5,6 +5,7 @@ from gymnasium import spaces
 
 from env import VacuumEnv
 from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper
+from her import VacuumGoalWrapper, HerReplayBufferForDQN
 
 import numpy as np
 import json
@@ -234,7 +235,7 @@ if __name__ == "__main__":
         print("Saving PPO eval trajectory...")
         rollout_and_record(eval_env.unwrapped, model, filename="ppo_eval.mp4", max_steps=max_steps)
 
-    else:
+    elif algo == "dqn":
         # --------------------------------------
         # DQN Training with wrappers and Monitor
         # --------------------------------------
@@ -277,3 +278,61 @@ if __name__ == "__main__":
 
         print("Saving DQN eval trajectory...")
         rollout_and_record(eval_env.unwrapped, model, filename="dqn_eval.mp4", max_steps=1000)
+    
+    elif algo == "her":
+        # -----------------------------------------------
+        # DQN with HER Training with wrappers and Monitor
+        # -----------------------------------------------
+        max_steps = 1000
+
+        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot")
+        base_env = TimeLimit(base_env, max_episode_steps=max_steps)
+        base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
+        base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
+
+        # Wrap with Goal Wrapper for HER
+        goal_env = VacuumGoalWrapper(base_env)
+        monitored_env = Monitor(goal_env)
+
+        # Eval env (same setup)
+        eval_base = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot")
+        eval_base = TimeLimit(eval_base, max_episode_steps=max_steps)
+        eval_base = ExplorationBonusWrapper(eval_base, bonus=0.3)
+        eval_base = ExploitationPenaltyWrapper(eval_base, time_penalty=-0.002, stay_penalty=-0.1)
+        eval_env = Monitor(VacuumGoalWrapper(eval_base))
+
+        # Set fixed wall layout
+        #walls = generate_1b1b_layout_grid()
+        monitored_env.reset()
+        eval_env.reset()
+
+        # default DQN uses Double DQN already
+        model = DQN(
+            "MultiInputPolicy",
+            monitored_env,
+            buffer_size=100000,
+            learning_starts=1000,
+            train_freq=4,
+            batch_size=64,
+            target_update_interval=1000,
+            gamma=0.98,
+            replay_buffer_class=HerReplayBufferForDQN,
+            replay_buffer_kwargs=dict(
+                n_sampled_goal=4,
+                goal_selection_strategy="future",
+                env=goal_env,
+            ),
+            verbose=1,
+            tensorboard_log="./tensorboard_dqn_her/"
+        )
+
+        # Training
+        model.learn(total_timesteps=total_timesteps)
+
+        # Save training run video
+        print("Saving final training trajectory...")
+        rollout_and_record(monitored_env.unwrapped, model, filename="her_train.mp4", max_steps=3000)
+
+        # Save evaluation run video
+        print("Saving evaluation trajectory...")
+        rollout_and_record(eval_env.unwrapped, model, filename="dqn_her_eval.mp4", max_steps=3000)
