@@ -211,6 +211,10 @@ class VacuumEnv(gym.Env):
         elif all_cleaned and not at_start:
             reward += self.penalty_delay_return
 
+        # End episode early if the agent is stuck or doing poorly
+        if self.stay_counter >= 30:
+            truncated = True
+
         return self._get_obs(), reward, terminated, truncated, {
             "all_cleaned": all_cleaned,
             "returned_home": at_start

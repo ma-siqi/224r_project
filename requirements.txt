@@ -13,3 +13,4 @@ seaborn
 scikit-learn
 jupyterlab
 ipykernel
+optuna
