@@ -1,12 +1,15 @@
 import gymnasium as gym
 from gymnasium.envs.registration import register
 from gymnasium.wrappers import TimeLimit
-from env import VacuumEnv
-from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper
 from gymnasium import spaces
 
-import numpy as np
+from env import VacuumEnv
+from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper
 
+import numpy as np
+import json
+import argparse
+from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib import animation
 from IPython.display import HTML
@@ -15,14 +18,10 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3 import PPO
-from gymnasium.wrappers import FlattenObservation
 from stable_baselines3 import DQN
 from stable_baselines3.common.callbacks import EvalCallback
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.monitor import Monitor
-
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
 
 # --------------------------------------
 # Register the robot vacuum environment
@@ -161,92 +160,120 @@ def rollout_and_record(env, model, filename="vacuum_run.mp4", max_steps=100):
 
 
 if __name__ == "__main__":
-    # --------------------------------------
-    # PPO Training with wrappers and Monitor
-    # --------------------------------------
-    base_env = gym.make("VacuumEnv-v0", grid_size=(40, 30), render_mode="plot")
-    base_env = TimeLimit(base_env, max_episode_steps=3000)
-    base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
-    base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
+    # ------------------------------
+    # Parse command-line arguments
+    # ------------------------------
+    parser = argparse.ArgumentParser(description="Train PPO or DQN on VacuumEnv")
+    parser.add_argument("--algo", choices=["ppo", "dqn"], default="ppo", help="RL algorithm to run")
+    parser.add_argument("--timesteps", type=int, default=500_000, help="Number of training timesteps")
+    parser.add_argument("--grid_size", type=int, nargs=2, default=[20, 20],
+                        help="Grid size as two integers (e.g., 40 30)")
+    parser.add_argument("--wall_mode", choices=["random", "hardcoded"], default="random",
+                        help="Wall layout: 'random' or 'hardcoded' (only applies to 40x30)")
+    args = parser.parse_args()
 
-    # monitor for stats logging
-    monitored_env = Monitor(base_env)
+    algo = args.algo
+    total_timesteps = args.timesteps
+    grid_size = tuple(args.grid_size)
+    wall_mode = args.wall_mode
 
-    # evaluation environment
-    eval_env = gym.make("VacuumEnv-v0", grid_size=(40, 30), render_mode="plot")
-    eval_env = TimeLimit(eval_env, max_episode_steps=3000)
-    eval_env = ExplorationBonusWrapper(eval_env, bonus=0.3)
-    eval_env = ExploitationPenaltyWrapper(eval_env, time_penalty=-0.002, stay_penalty=-0.1)
-    eval_env = Monitor(eval_env)
+    # Determine wall layout
+    walls = generate_1b1b_layout_grid() if wall_mode == "hardcoded" and grid_size == (40, 30) else None
 
-    # reset before training
-    # call walls = generate_1b1b_layout_grid() to generate fixed wall layout
-    walls = generate_1b1b_layout_grid()
-    obs, info = monitored_env.reset(options={"walls": walls})
-    obs, info = eval_env.reset(options={"walls": walls})
-    check_env(monitored_env, warn=True)
-    check_env(eval_env, warn=True)
+    # Load best hyperparameters if available
+    param_path = Path(f"optuna_results/{algo}_best_params.json")
+    if param_path.exists():
+        with open(param_path, "r") as f:
+            best_params = json.load(f)
+    else:
+        best_params = {}
 
-    # PPO agent
-    model = PPO(
-        "MultiInputPolicy",
-        monitored_env,
-        verbose=1,
-        ent_coef=0.01,
-        tensorboard_log="./tensorboard/",
-    )
+    if algo == "ppo":
+        # --------------------------------------
+        # PPO Training with wrappers and Monitor
+        # --------------------------------------
+        max_steps = 3000
 
-    model.learn(total_timesteps=500000)
+        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot")
+        base_env = TimeLimit(base_env, max_episode_steps=max_steps)
+        base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
+        base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
 
-    # Save the final trajectory
-    print("Saving final training trajectory...")
-    rollout_and_record(monitored_env.unwrapped, model, filename="ppo_train.mp4", max_steps=3000)
+        # monitor for stats logging
+        monitored_env = Monitor(base_env)
 
-    # Save best eval trajectory
-    print("Saving best eval trajectory...")
-    rollout_and_record(eval_env.unwrapped, model, filename="ppo_eval.mp4", max_steps=3000)
+        # evaluation environment
+        eval_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot")
+        eval_env = TimeLimit(eval_env, max_episode_steps=max_steps)
+        eval_env = ExplorationBonusWrapper(eval_env, bonus=0.3)
+        eval_env = ExploitationPenaltyWrapper(eval_env, time_penalty=-0.002, stay_penalty=-0.1)
+        eval_env = Monitor(eval_env)
 
-    # --------------------------------------
-    # DQN Training with wrappers and Monitor
-    # --------------------------------------
-    base_env = gym.make("VacuumEnv-v0", grid_size=(20, 20), render_mode="plot")
-    base_env = TimeLimit(base_env, max_episode_steps=1000)
-    base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
-    base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
-    monitored_env = Monitor(base_env)
+        # reset before training
+        obs, _ = monitored_env.reset(options={"walls": walls})
+        obs, _ = eval_env.reset(options={"walls": walls})
+        check_env(monitored_env, warn=True)
+        check_env(eval_env, warn=True)
 
-    eval_env = gym.make("VacuumEnv-v0", grid_size=(20, 20), render_mode="plot")
-    eval_env = TimeLimit(eval_env, max_episode_steps=1000)
-    eval_env = ExplorationBonusWrapper(eval_env, bonus=0.3)
-    eval_env = ExploitationPenaltyWrapper(eval_env, time_penalty=-0.002, stay_penalty=-0.1)
-    eval_env = Monitor(eval_env)
+        # PPO agent with best hyperparameters if available
+        model = PPO(
+            "MultiInputPolicy",
+            monitored_env,
+            verbose=1,
+            tensorboard_log="./tensorboard/",
+            **best_params
+        )
 
-    walls = None
-    obs, info = monitored_env.reset(options={"walls": walls})
-    obs, info = eval_env.reset(options={"walls": walls})
-    check_env(monitored_env, warn=True)
-    check_env(eval_env, warn=True)
+        model.learn(total_timesteps=total_timesteps)
 
-    # DQN agent
-    dqn_model = DQN(
-        "MultiInputPolicy",
-        monitored_env,
-        verbose=1,
-        tensorboard_log="./tensorboard/",
-        exploration_fraction=0.1,
-        exploration_final_eps=0.05,
-    )
+        # Save the final trajectory
+        print("Saving PPO training trajectory...")
+        rollout_and_record(monitored_env.unwrapped, model, filename="ppo_train.mp4", max_steps=max_steps)
 
-    dqn_model.learn(
-        total_timesteps=500000,
-        callback=DQNLoggingCallback(verbose=1, log_freq=5000),
-        log_interval=1,
-    )
+        # Save best eval trajectory
+        print("Saving PPO eval trajectory...")
+        rollout_and_record(eval_env.unwrapped, model, filename="ppo_eval.mp4", max_steps=max_steps)
 
-    # Save final training trajectory
-    print("Saving final DQN training trajectory...")
-    rollout_and_record(monitored_env.unwrapped, dqn_model, filename="dqn_train.mp4", max_steps=1000)
+    else:
+        # --------------------------------------
+        # DQN Training with wrappers and Monitor
+        # --------------------------------------
+        max_steps = 1000
 
-    # Save evaluation trajectory
-    print("Saving best DQN eval trajectory...")
-    rollout_and_record(eval_env.unwrapped, dqn_model, filename="dqn_eval.mp4", max_steps=1000)
+        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot")
+        base_env = TimeLimit(base_env, max_episode_steps=max_steps)
+        base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
+        base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
+        monitored_env = Monitor(base_env)
+
+        eval_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot")
+        eval_env = TimeLimit(eval_env, max_episode_steps=max_steps)
+        eval_env = ExplorationBonusWrapper(eval_env, bonus=0.3)
+        eval_env = ExploitationPenaltyWrapper(eval_env, time_penalty=-0.002, stay_penalty=-0.1)
+        eval_env = Monitor(eval_env)
+
+        obs, _ = monitored_env.reset(options={"walls": walls})
+        obs, _ = eval_env.reset(options={"walls": walls})
+        check_env(monitored_env, warn=True)
+        check_env(eval_env, warn=True)
+
+        model = DQN(
+            "MultiInputPolicy",
+            monitored_env,
+            verbose=1,
+            tensorboard_log="./tensorboard/",
+            exploration_final_eps=0.05,
+            **best_params
+        )
+
+        model.learn(
+            total_timesteps=total_timesteps,
+            callback=DQNLoggingCallback(verbose=1, log_freq=5000),
+            log_interval=1,
+        )
+
+        print("Saving DQN training trajectory...")
+        rollout_and_record(monitored_env.unwrapped, model, filename="dqn_train.mp4", max_steps=max_steps)
+
+        print("Saving DQN eval trajectory...")
+        rollout_and_record(eval_env.unwrapped, model, filename="dqn_eval.mp4", max_steps=max_steps)
