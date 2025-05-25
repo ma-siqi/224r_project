@@ -7,7 +7,7 @@ import json
 import os
 
 class MetricCallback(BaseCallback):
-    def __init__(self, verbose=0, log_dir="./logs/"):
+    def __init__(self, verbose=1, log_dir="./logs/"):
         super().__init__(verbose)
         self.log_dir = log_dir
         os.makedirs(log_dir, exist_ok=True)
@@ -127,7 +127,8 @@ class MetricWrapper(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
         self.metrics = {}
-        self.base_env = env.unwrapped
+        self.env = env
+        self.base_env = env.base_env # env.unwrapped
 
     def reset(self, **kwargs):
         self.metrics = {}
@@ -148,6 +149,10 @@ class MetricWrapper(gym.Wrapper):
             info.update(self.metrics)
 
         return obs, reward, terminated, truncated, info
+
+    def compute_reward(self, achieved_goal, desired_goal, info):
+        return self.env.compute_reward(achieved_goal, desired_goal, info)
+
 
 def evaluate_model(model, env, n_episodes=10, render=False) -> Dict[str, List[float]]:
     """
@@ -203,12 +208,78 @@ class RandomAgent:
 
     def predict(self, observation):
         return self.action_space.sample(), None
+    
+def evaluate_random_agent_steps(agent, env, max_total_steps=500_000, max_episode_steps=3000) -> Dict[str, List[float]]:
+    """
+    Run random agent for up to `max_total_steps` across multiple episodes,
+    limiting each episode to `max_episode_steps`, and collect evaluation metrics.
+    """
+    total_steps = 0
 
-def evaluate_random_agent(env, episodes=10) -> Dict[str, List[float]]:
+    metrics = {
+        "episode_rewards": [],
+        "episode_lengths": [],
+        "coverage_ratio": [],
+        "path_efficiency": [],
+        "revisit_ratio": [],
+        "cleaning_time": []
+    }
+
+    episode = 0
+    while total_steps < max_total_steps:
+        obs, _ = env.reset()
+        done = False
+        episode_reward = 0
+        episode_length = 0
+
+        while not done and episode_length < max_episode_steps and total_steps < max_total_steps:
+            action, _ = agent.predict(obs)
+            obs, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+            episode_reward += reward
+            episode_length += 1
+            total_steps += 1
+
+        metrics["episode_rewards"].append(episode_reward)
+        metrics["episode_lengths"].append(episode_length)
+        metrics["coverage_ratio"].append(info.get("coverage_ratio", 0))
+        metrics["path_efficiency"].append(info.get("path_efficiency", 0))
+        metrics["revisit_ratio"].append(info.get("revisit_ratio", 0))
+        if "cleaning_time" in info:
+            metrics["cleaning_time"].append(info["cleaning_time"])
+
+        episode += 1
+        print(f"Episode {episode}")
+        print(f"Reward: {episode_reward:.2f}")
+        print(f"Length: {episode_length}")
+        print(f"Coverage: {info.get('coverage_ratio', 0):.2%}")
+        print(f"Path Efficiency: {info.get('path_efficiency', 0):.2f}")
+        print(f"Revisit Ratio: {info.get('revisit_ratio', 0):.2f}")
+        if "cleaning_time" in info:
+            print(f"Cleaning Time: {info['cleaning_time']}")
+        print("---")
+
+    return metrics
+
+def export_random_metrics(metrics, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+
+    for metric_name, values in metrics.items():
+        plt.figure(figsize=(10, 4))
+        plt.plot(range(1, len(values) + 1), values)
+        plt.title(metric_name)
+        plt.xlabel("Step")
+        plt.ylabel("Value")
+        plt.grid(True)
+
+        safe_name = metric_name.replace("/", "_")
+        plt.savefig(os.path.join(output_dir, f"{safe_name}.png"))
+        plt.close()
+
+def evaluate_random_agent(agent, env, episodes=10) -> Dict[str, List[float]]:
     """
     Evaluate a random agent as baseline
     """
-    agent = RandomAgent(env.action_space)
     return evaluate_model(agent, env, n_episodes=episodes)
 
 def plot_comparison_metrics(rainbow_metrics: Dict[str, List[float]], 

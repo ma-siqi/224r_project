@@ -6,7 +6,8 @@ from gymnasium import spaces
 from env import VacuumEnv
 from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper
 from her import VacuumGoalWrapper, HerReplayBufferForDQN
-from eval import MetricWrapper, MetricCallback, evaluate_random_agent, RandomAgent
+from eval import MetricWrapper, MetricCallback, evaluate_random_agent_steps, RandomAgent
+from eval import export_random_metrics
 
 import numpy as np
 import json
@@ -137,7 +138,10 @@ def rollout_and_record(env, model, filename="vacuum_run.mp4", max_steps=100):
         fig = env.render_frame()
         frames.append(fig)
 
-        action, _ = model.predict(obs)
+        try:
+            action, _ = model.predict(obs)
+        except:
+            action, _ = model.predict(obs, deterministic=True)
         obs, _, terminated, truncated, _ = env.step(action)
 
         if terminated or truncated:
@@ -210,7 +214,8 @@ if __name__ == "__main__":
         eval_env = TimeLimit(eval_env, max_episode_steps=max_steps)
         eval_env = ExplorationBonusWrapper(eval_env, bonus=0.3)
         eval_env = ExploitationPenaltyWrapper(eval_env, time_penalty=-0.002, stay_penalty=-0.1)
-        base_env = MetricWrapper(base_env)
+
+        eval_env = MetricWrapper(eval_env)
         eval_env = Monitor(eval_env)
 
         # reset before training
@@ -245,7 +250,7 @@ if __name__ == "__main__":
         # ---------------
         # Random baseline
         # ---------------
-        max_steps = 2000
+        max_steps = 3000
         base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot")
         base_env = TimeLimit(base_env, max_episode_steps=max_steps)
         base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
@@ -260,7 +265,10 @@ if __name__ == "__main__":
 
         # evaluate the random agent
         random_agent = RandomAgent(base_env.action_space)
-        metrics = evaluate_random_agent(base_env, random_agent, max_steps=max_steps)
+        metrics = evaluate_random_agent_steps(random_agent, base_env)
+        export_random_metrics(metrics, "best_param/random")
+        with open("random_metrics.json", "w") as f:
+            json.dump(metrics, f, indent=4)
         rollout_and_record(base_env.unwrapped, random_agent, filename="random_agent.mp4", max_steps=max_steps)
 
     elif algo == "dqn":
@@ -273,12 +281,16 @@ if __name__ == "__main__":
         base_env = TimeLimit(base_env, max_episode_steps=max_steps)
         base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
         base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
+
+        base_env = MetricWrapper(base_env)
         monitored_env = Monitor(base_env)
 
         eval_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot")
         eval_env = TimeLimit(eval_env, max_episode_steps=max_steps)
         eval_env = ExplorationBonusWrapper(eval_env, bonus=0.3)
         eval_env = ExploitationPenaltyWrapper(eval_env, time_penalty=-0.002, stay_penalty=-0.1)
+
+        eval_env = MetricWrapper(eval_env)
         eval_env = Monitor(eval_env)
 
         obs, _ = monitored_env.reset(options={"walls": walls})
@@ -297,21 +309,20 @@ if __name__ == "__main__":
 
         model.learn(
             total_timesteps=total_timesteps,
-            callback=DQNLoggingCallback(verbose=1, log_freq=10000),
-            log_interval=1,
+            callback=MetricCallback(),
         )
 
         print("Saving DQN training trajectory...")
-        rollout_and_record(monitored_env.unwrapped, model, filename="dqn_train.mp4", max_steps=1000)
+        rollout_and_record(monitored_env.unwrapped, model, filename="dqn_train.mp4", max_steps=3000)
 
         print("Saving DQN eval trajectory...")
-        rollout_and_record(eval_env.unwrapped, model, filename="dqn_eval.mp4", max_steps=1000)
+        rollout_and_record(eval_env.unwrapped, model, filename="dqn_eval.mp4", max_steps=3000)
     
     elif algo == "her":
         # -----------------------------------------------
         # DQN with HER Training with wrappers and Monitor
         # -----------------------------------------------
-        max_steps = 1000
+        max_steps = 500
 
         base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot")
         base_env = TimeLimit(base_env, max_episode_steps=max_steps)
@@ -320,42 +331,44 @@ if __name__ == "__main__":
 
         # Wrap with Goal Wrapper for HER
         goal_env = VacuumGoalWrapper(base_env)
-        monitored_env = Monitor(goal_env)
+        monitored_env = MetricWrapper(goal_env)
 
         # Eval env (same setup)
         eval_base = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot")
         eval_base = TimeLimit(eval_base, max_episode_steps=max_steps)
         eval_base = ExplorationBonusWrapper(eval_base, bonus=0.3)
         eval_base = ExploitationPenaltyWrapper(eval_base, time_penalty=-0.002, stay_penalty=-0.1)
-        eval_env = Monitor(VacuumGoalWrapper(eval_base))
+        eval_env = MetricWrapper(VacuumGoalWrapper(eval_base))
 
         # Set fixed wall layout
-        #walls = generate_1b1b_layout_grid()
-        monitored_env.reset()
-        eval_env.reset()
+        obs, _ = goal_env.reset(options={"walls": walls})
+        obs, _ = eval_env.reset(options={"walls": walls})
+        check_env(monitored_env, warn=True)
+        check_env(eval_env, warn=True)
 
         # default DQN uses Double DQN already
         model = DQN(
             "MultiInputPolicy",
             monitored_env,
-            buffer_size=100000,
+            verbose=1,
+            tensorboard_log="./tensorboard_dqn_her/",
             learning_starts=1000,
             train_freq=4,
-            batch_size=64,
             target_update_interval=1000,
-            gamma=0.98,
             replay_buffer_class=HerReplayBufferForDQN,
             replay_buffer_kwargs=dict(
                 n_sampled_goal=4,
                 goal_selection_strategy="future",
                 env=goal_env,
             ),
-            verbose=1,
-            tensorboard_log="./tensorboard_dqn_her/"
+            **best_params
         )
 
         # Training
-        model.learn(total_timesteps=total_timesteps)
+        model.learn(
+            total_timesteps=total_timesteps,
+            callback=MetricCallback()
+        )
 
         # Save training run video
         print("Saving final training trajectory...")

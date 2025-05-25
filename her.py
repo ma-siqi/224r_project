@@ -57,10 +57,15 @@ class VacuumGoalWrapper(gym.Env):
         self.goal_dim = self.grid_size[0] * self.grid_size[1]
 
         self.observation_space = spaces.Dict({
-            "observation": spaces.Box(low=0, high=1, shape=(self.obs_dim,), dtype=np.float32),
+            "observation": spaces.Box(
+                low=np.array([0, 0, 0, 0, 0, 0], dtype=np.float32),
+                high=np.array([self.grid_size[0] - 1, self.grid_size[1] - 1, 7, 1, 1, 1], dtype=np.float32),
+                dtype=np.float32
+            ),
             "achieved_goal": spaces.Box(low=0, high=1, shape=(self.goal_dim,), dtype=np.uint8),
             "desired_goal": spaces.Box(low=0, high=1, shape=(self.goal_dim,), dtype=np.uint8),
         })
+
         self.action_space = env.action_space
 
     def reset(self, **kwargs):
@@ -69,10 +74,27 @@ class VacuumGoalWrapper(gym.Env):
 
     def step(self, action):
         obs, reward, terminated, truncated, info = self.env.step(action)
+        achieved = self.base_env.cleaned_map.flatten()
+        goal = (self.base_env.obstacle_map == 0).astype(np.uint8).flatten()
+        reward = float(self.compute_reward(achieved, goal, info))
         return self._wrap_obs(obs), reward, terminated, truncated, info
 
     def compute_reward(self, achieved_goal, desired_goal, info):
-        return np.array(0.0 if np.array_equal(achieved_goal, desired_goal) else -1.0, dtype=np.float32)
+        achieved_goal = np.asarray(achieved_goal)
+        desired_goal = np.asarray(desired_goal)
+
+        is_vectorized = achieved_goal.ndim == 2
+
+        if is_vectorized:
+            rewards = np.array([
+                0.0 if np.array_equal(ag, dg) else -1.0
+                for ag, dg in zip(achieved_goal, desired_goal)
+            ], dtype=np.float32)
+        else:
+            rewards = np.array(0.0 if np.array_equal(achieved_goal, desired_goal) else -1.0, dtype=np.float32)
+
+        return rewards
+
 
     def _wrap_obs(self, obs):
         pos = obs["agent_pos"]
