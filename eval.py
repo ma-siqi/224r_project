@@ -1,19 +1,101 @@
 import gymnasium as gym
 import numpy as np
 from stable_baselines3.common.callbacks import BaseCallback
+import matplotlib.pyplot as plt
+from typing import Dict, List
+import json
+import os
 
 class MetricCallback(BaseCallback):
-    def __init__(self, verbose=0):
+    def __init__(self, verbose=0, log_dir="./logs/"):
         super().__init__(verbose)
+        self.log_dir = log_dir
+        os.makedirs(log_dir, exist_ok=True)
+        self.metrics = {
+            "coverage_ratio": [],
+            "path_efficiency": [],
+            "revisit_ratio": [],
+            "episode_rewards": [],
+            "episode_lengths": [],
+            "cleaning_time": []
+        }
 
     def _on_step(self) -> bool:
         infos = self.locals.get("infos", [])
         for info in infos:
+            if "episode" in info:
+                self.metrics["episode_rewards"].append(info["episode"]["r"])
+                self.metrics["episode_lengths"].append(info["episode"]["l"])
+            
             if "coverage_ratio" in info:
-                self.logger.record("custom/coverage_ratio", info["coverage_ratio"])
-                self.logger.record("custom/path_efficiency", info["path_efficiency"])
-                self.logger.record("custom/revisit_ratio", info["revisit_ratio"])
+                self.metrics["coverage_ratio"].append(info["coverage_ratio"])
+                self.metrics["path_efficiency"].append(info["path_efficiency"])
+                self.metrics["revisit_ratio"].append(info["revisit_ratio"])
+                if "cleaning_time" in info:
+                    self.metrics["cleaning_time"].append(info["cleaning_time"])
+
+                # Log to tensorboard
+                self.logger.record("metrics/coverage_ratio", info["coverage_ratio"])
+                self.logger.record("metrics/path_efficiency", info["path_efficiency"])
+                self.logger.record("metrics/revisit_ratio", info["revisit_ratio"])
+                if "cleaning_time" in info:
+                    self.logger.record("metrics/cleaning_time", info["cleaning_time"])
+
         return True
+
+    def _on_training_end(self) -> None:
+        # Save metrics to file
+        metrics_file = os.path.join(self.log_dir, "training_metrics.json")
+        with open(metrics_file, "w") as f:
+            json.dump(self.metrics, f)
+
+        # Plot metrics
+        self._plot_metrics()
+
+    def _plot_metrics(self):
+        fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+        fig.suptitle("Training Metrics")
+
+        # Plot episode rewards
+        axes[0, 0].plot(self.metrics["episode_rewards"])
+        axes[0, 0].set_title("Episode Rewards")
+        axes[0, 0].set_xlabel("Episode")
+        axes[0, 0].set_ylabel("Reward")
+
+        # Plot episode lengths
+        axes[0, 1].plot(self.metrics["episode_lengths"])
+        axes[0, 1].set_title("Episode Lengths")
+        axes[0, 1].set_xlabel("Episode")
+        axes[0, 1].set_ylabel("Steps")
+
+        # Plot coverage ratio
+        axes[0, 2].plot(self.metrics["coverage_ratio"])
+        axes[0, 2].set_title("Coverage Ratio")
+        axes[0, 2].set_xlabel("Episode")
+        axes[0, 2].set_ylabel("Ratio")
+
+        # Plot path efficiency
+        axes[1, 0].plot(self.metrics["path_efficiency"])
+        axes[1, 0].set_title("Path Efficiency")
+        axes[1, 0].set_xlabel("Episode")
+        axes[1, 0].set_ylabel("Efficiency")
+
+        # Plot revisit ratio
+        axes[1, 1].plot(self.metrics["revisit_ratio"])
+        axes[1, 1].set_title("Revisit Ratio")
+        axes[1, 1].set_xlabel("Episode")
+        axes[1, 1].set_ylabel("Ratio")
+
+        # Plot cleaning time if available
+        if self.metrics["cleaning_time"]:
+            axes[1, 2].plot(self.metrics["cleaning_time"])
+            axes[1, 2].set_title("Cleaning Time")
+            axes[1, 2].set_xlabel("Episode")
+            axes[1, 2].set_ylabel("Steps")
+
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.log_dir, "training_metrics.png"))
+        plt.close()
 
 def compute_coverage_ratio(env):
     total_dirt = np.sum(env.dirt_map == 1) + np.sum(env.cleaned_map == 1)
@@ -25,9 +107,21 @@ def compute_redundancy_rate(env):
     return np.mean(path_visits) if path_visits.size > 0 else 0
 
 def compute_revisit_ratio(env):
-    revisits = np.sum(env.path_map[env.path_map > 1])
-    total_steps = np.sum(env.path_map)
-    return (revisits - np.count_nonzero(env.path_map > 0)) / total_steps if total_steps > 0 else 0
+    """Calculate the ratio of revisits to total steps.
+    A revisit is counted when a cell is visited more than once."""
+    # Convert to float64 to avoid overflow
+    path_map = env.path_map.astype(np.float64) if hasattr(env, 'path_map') else env.unwrapped.path_map.astype(np.float64)
+    total_steps = np.sum(path_map)
+    
+    if total_steps == 0:
+        return 0.0
+    
+    # Calculate total revisits
+    # For each cell, count how many times it was visited beyond the first visit
+    revisits = np.sum(np.maximum(path_map - 1, 0))
+    
+    # Revisit ratio is the number of revisit steps divided by total steps
+    return revisits / total_steps
 
 class MetricWrapper(gym.Wrapper):
     def __init__(self, env):
@@ -43,6 +137,11 @@ class MetricWrapper(gym.Wrapper):
         obs, reward, terminated, truncated, info = self.env.step(action)
 
         if terminated or truncated:
+            # Get the path_map from the base environment
+            path_map = self.base_env.path_map
+            info["path_map"] = path_map  # Add path_map to info
+            
+            # Compute metrics
             self.metrics['coverage_ratio'] = compute_coverage_ratio(self.base_env)
             self.metrics['path_efficiency'] = compute_redundancy_rate(self.base_env)
             self.metrics['revisit_ratio'] = compute_revisit_ratio(self.base_env)
@@ -50,36 +149,96 @@ class MetricWrapper(gym.Wrapper):
 
         return obs, reward, terminated, truncated, info
 
+def evaluate_model(model, env, n_episodes=10, render=False) -> Dict[str, List[float]]:
+    """
+    Evaluate a trained model and return detailed metrics
+    """
+    metrics = {
+        "episode_rewards": [],
+        "episode_lengths": [],
+        "coverage_ratio": [],
+        "path_efficiency": [],
+        "revisit_ratio": [],
+        "cleaning_time": []
+    }
+
+    for episode in range(n_episodes):
+        obs, _ = env.reset()
+        done = False
+        episode_reward = 0
+        episode_length = 0
+
+        while not done:
+            action, _ = model.predict(obs, deterministic=True)
+            obs, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+            episode_reward += reward
+            episode_length += 1
+
+            if done:
+                metrics["episode_rewards"].append(episode_reward)
+                metrics["episode_lengths"].append(episode_length)
+                metrics["coverage_ratio"].append(info.get("coverage_ratio", 0))
+                metrics["path_efficiency"].append(info.get("path_efficiency", 0))
+                metrics["revisit_ratio"].append(info.get("revisit_ratio", 0))
+                if "cleaning_time" in info:
+                    metrics["cleaning_time"].append(info["cleaning_time"])
+
+                print(f"Episode {episode + 1}")
+                print(f"Reward: {episode_reward:.2f}")
+                print(f"Length: {episode_length}")
+                print(f"Coverage: {info.get('coverage_ratio', 0):.2%}")
+                print(f"Path Efficiency: {info.get('path_efficiency', 0):.2f}")
+                print(f"Revisit Ratio: {info.get('revisit_ratio', 0):.2f}")
+                if "cleaning_time" in info:
+                    print(f"Cleaning Time: {info['cleaning_time']}")
+                print("---")
+
+    return metrics
+
 class RandomAgent:
+    """Simple random agent for baseline comparison"""
     def __init__(self, action_space):
         self.action_space = action_space
 
     def predict(self, observation):
         return self.action_space.sample(), None
 
-def evaluate_random_agent(env, agent, episodes=1, max_steps=1000):
-    all_metrics = []
+def evaluate_random_agent(env, episodes=10) -> Dict[str, List[float]]:
+    """
+    Evaluate a random agent as baseline
+    """
+    agent = RandomAgent(env.action_space)
+    return evaluate_model(agent, env, n_episodes=episodes)
 
-    for ep in range(episodes):
-        obs, _ = env.reset()
-        done = False
-        step = 0
+def plot_comparison_metrics(rainbow_metrics: Dict[str, List[float]], 
+                          random_metrics: Dict[str, List[float]], 
+                          save_path: str = "comparison_metrics.png"):
+    """
+    Plot comparison between Rainbow DQN and random agent metrics
+    """
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    fig.suptitle("Rainbow DQN vs Random Agent")
 
-        while not done and step < max_steps:
-            action, _ = agent.predict(obs)
-            obs, reward, terminated, truncated, info = env.step(action)
-            done = terminated or truncated
-            step += 1
+    metrics = [
+        ("episode_rewards", "Episode Rewards", "Reward"),
+        ("episode_lengths", "Episode Lengths", "Steps"),
+        ("coverage_ratio", "Coverage Ratio", "Ratio"),
+        ("path_efficiency", "Path Efficiency", "Efficiency"),
+        ("revisit_ratio", "Revisit Ratio", "Ratio"),
+        ("cleaning_time", "Cleaning Time", "Steps")
+    ]
 
-        base_env = env.unwrapped
-        metrics = {
-        "coverage_ratio": compute_coverage_ratio(base_env),
-        "redundancy_rate": compute_redundancy_rate(base_env),
-        "revisit_ratio": compute_revisit_ratio(base_env)
-        }
+    for idx, (metric, title, ylabel) in enumerate(metrics):
+        ax = axes[idx // 3, idx % 3]
+        
+        if metric in rainbow_metrics and metric in random_metrics:
+            ax.boxplot([rainbow_metrics[metric], random_metrics[metric]], 
+                      labels=['Rainbow', 'Random'])
+            ax.set_title(title)
+            ax.set_ylabel(ylabel)
 
-        print(f"Episode {ep+1}: {metrics}")
-        all_metrics.append(metrics)
-
-    return all_metrics
+    plt.tight_layout()
+    plt.savefig(save_path)
+    plt.close()
 

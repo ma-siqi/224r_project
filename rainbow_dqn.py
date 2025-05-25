@@ -4,13 +4,26 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 from collections import deque, namedtuple
 import random
-import cv2
+from typing import Dict, List, Tuple
 from env import VacuumEnv
+import matplotlib.pyplot as plt
+from matplotlib import animation
+from eval import MetricWrapper, compute_coverage_ratio, compute_redundancy_rate, compute_revisit_ratio, plot_comparison_metrics
+import json
+import argparse
+from torch.utils.tensorboard import SummaryWriter
+from gymnasium.wrappers import TimeLimit
+from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper
 
 # Register custom environment
 gym.register(id="Vacuum-v0", entry_point="env:VacuumEnv")
+
+# Create base log directory
+BASE_LOG_DIR = "./logs"
+os.makedirs(BASE_LOG_DIR, exist_ok=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -23,167 +36,771 @@ START_TRAINING = 1000
 EPSILON_DECAY = 0.995
 MIN_EPSILON = 0.1
 UPDATE_TARGET_EVERY = 100
+N_ATOMS = 51
+V_MIN = -10
+V_MAX = 10
+N_STEP = 3
+ALPHA = 0.6  # PER parameters
+BETA = 0.4
+BETA_INCREMENT = 0.001
 
-Transition = namedtuple('Transition', ('state', 'action', 'reward', 'next_state', 'done'))
+Transition = namedtuple('Transition', ('state', 'action', 'reward', 'next_state', 'done', 'priority'))
 
-class RainbowDQN(nn.Module):
-    def __init__(self, obs_dim, n_actions, atoms=51, Vmin=-10, Vmax=10):
+class NoisyLinear(nn.Module):
+    def __init__(self, in_features, out_features, std_init=0.5):
         super().__init__()
-        self.atoms = atoms
-        self.Vmin = Vmin
-        self.Vmax = Vmax
-        self.support = torch.linspace(Vmin, Vmax, atoms).to(device)
-        self.delta_z = (Vmax - Vmin) / (atoms - 1)
+        self.in_features = in_features
+        self.out_features = out_features
+        self.std_init = std_init
 
-        self.feature = nn.Sequential(
-            nn.Linear(obs_dim, 128),
-            nn.ReLU(),
-            nn.Linear(128, 128),
-            nn.ReLU(),
-        )
-        self.value = nn.Linear(128, n_actions * atoms)
+        self.weight_mu = nn.Parameter(torch.empty(out_features, in_features))
+        self.weight_sigma = nn.Parameter(torch.empty(out_features, in_features))
+        self.register_buffer('weight_epsilon', torch.empty(out_features, in_features))
+
+        self.bias_mu = nn.Parameter(torch.empty(out_features))
+        self.bias_sigma = nn.Parameter(torch.empty(out_features))
+        self.register_buffer('bias_epsilon', torch.empty(out_features))
+
+        self.reset_parameters()
+        self.reset_noise()
+
+    def reset_parameters(self):
+        mu_range = 1 / np.sqrt(self.in_features)
+        self.weight_mu.data.uniform_(-mu_range, mu_range)
+        self.weight_sigma.data.fill_(self.std_init / np.sqrt(self.in_features))
+        self.bias_mu.data.uniform_(-mu_range, mu_range)
+        self.bias_sigma.data.fill_(self.std_init / np.sqrt(self.out_features))
+
+    def reset_noise(self):
+        epsilon_in = self._scale_noise(self.in_features)
+        epsilon_out = self._scale_noise(self.out_features)
+        self.weight_epsilon.copy_(epsilon_out.outer(epsilon_in))
+        self.bias_epsilon.copy_(epsilon_out)
+
+    def _scale_noise(self, size):
+        x = torch.randn(size, device=self.weight_mu.device)  # Ensure noise is on same device
+        return x.sign().mul_(x.abs().sqrt_())
 
     def forward(self, x):
-        batch_size = x.shape[0]
-        x = self.feature(x)
-        x = self.value(x)
-        x = x.view(batch_size, -1, self.atoms)
-        return torch.softmax(x, dim=2)
+        if self.training:  # During training, use noise for exploration
+            return F.linear(x, 
+                self.weight_mu + self.weight_sigma * self.weight_epsilon,
+                self.bias_mu + self.bias_sigma * self.bias_epsilon)
+        else:  # During evaluation, use mean values for deterministic behavior
+            return F.linear(x, self.weight_mu, self.bias_mu)
 
-    def act(self, state, epsilon, action_dim):
+class RainbowDQN(nn.Module):
+    def __init__(self, obs_dim: Dict[str, int], n_actions: int):
+        super().__init__()
+        self.n_actions = n_actions
+        self.atoms = N_ATOMS
+        self.support = torch.linspace(V_MIN, V_MAX, N_ATOMS).to(device)
+        self.delta_z = (V_MAX - V_MIN) / (N_ATOMS - 1)
+
+        # Process different observation components
+        self.agent_pos_net = nn.Sequential(
+            nn.Linear(2, 64),
+            nn.ReLU()
+        )
+        
+        self.agent_orient_net = nn.Sequential(
+            nn.Linear(1, 32),
+            nn.ReLU()
+        )
+        
+        self.local_view_net = nn.Sequential(
+            nn.Linear(3, 32),
+            nn.ReLU()
+        )
+
+        # Combine all features
+        combined_size = 64 + 32 + 32
+
+        # Advantage and Value streams with NoisyLinear
+        self.advantage_hidden = NoisyLinear(combined_size, 128)
+        self.advantage = NoisyLinear(128, n_actions * N_ATOMS)
+        
+        self.value_hidden = NoisyLinear(combined_size, 128)
+        self.value = NoisyLinear(128, N_ATOMS)
+
+    def forward(self, x: Dict[str, torch.Tensor]) -> torch.Tensor:
+        batch_size = x['agent_pos'].shape[0]
+        
+        # Process each input component
+        pos_features = self.agent_pos_net(x['agent_pos'].float())  # [batch_size, 64]
+        
+        # Handle orientation - ensure it's 2D
+        orient = x['agent_orient'].float()
+        if orient.dim() == 1:
+            orient = orient.unsqueeze(-1)  # Add feature dimension
+        elif orient.dim() == 3:
+            orient = orient.squeeze(1)  # Remove extra dimension if present
+        orient_features = self.agent_orient_net(orient)  # [batch_size, 32]
+        
+        # Handle local view
+        view = x['local_view'].float()
+        if view.dim() == 3:
+            view = view.squeeze(1)  # Remove extra dimension if present
+        view_features = self.local_view_net(view)  # [batch_size, 32]
+        
+        # Ensure all features have the same number of dimensions
+        if pos_features.dim() != orient_features.dim():
+            pos_features = pos_features.unsqueeze(1) if pos_features.dim() < orient_features.dim() else pos_features
+            orient_features = orient_features.unsqueeze(1) if orient_features.dim() < pos_features.dim() else orient_features
+            view_features = view_features.unsqueeze(1) if view_features.dim() < pos_features.dim() else view_features
+        
+        # Combine features
+        combined = torch.cat([pos_features, orient_features, view_features], dim=1)
+        
+        # Dueling architecture with noisy layers
+        advantage_hidden = F.relu(self.advantage_hidden(combined))
+        advantage = self.advantage(advantage_hidden).view(batch_size, self.n_actions, self.atoms)
+        
+        value_hidden = F.relu(self.value_hidden(combined))
+        value = self.value(value_hidden).view(batch_size, 1, self.atoms)
+        
+        # Combine value and advantage
+        q_dist = value + advantage - advantage.mean(dim=1, keepdim=True)
+        
+        # Get probabilities
+        return F.softmax(q_dist, dim=2)
+
+    def reset_noise(self):
+        self.advantage_hidden.reset_noise()
+        self.advantage.reset_noise()
+        self.value_hidden.reset_noise()
+        self.value.reset_noise()
+
+    def act(self, state: Dict[str, np.ndarray], epsilon: float = 0.0) -> int:
         if random.random() < epsilon:
-            return random.randint(0, action_dim - 1)
+            return random.randint(0, self.n_actions - 1)
+        
         with torch.no_grad():
-            state = torch.FloatTensor(state).unsqueeze(0).to(device)
+            # Convert numpy arrays to tensors and add batch dimension
+            state = {
+                'agent_pos': torch.FloatTensor(state['agent_pos']).unsqueeze(0).to(device),
+                'agent_orient': torch.FloatTensor([state['agent_orient']]).to(device),
+                'local_view': torch.FloatTensor(state['local_view']).unsqueeze(0).to(device)
+            }
+            
             dist = self(state)
-            q_values = torch.sum(dist * self.support, dim=2)
+            q_values = (dist * self.support).sum(dim=2)
             return q_values.argmax(1).item()
 
-class ReplayBuffer:
-    def __init__(self, capacity):
-        self.buffer = deque(maxlen=capacity)
+class PrioritizedReplayBuffer:
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self.buffer = []
+        self.priorities = np.zeros(capacity, dtype=np.float32)
+        self.position = 0
+        self.n_step_buffer = deque(maxlen=N_STEP)
+        self.gamma = GAMMA
 
-    def push(self, *args):
-        self.buffer.append(Transition(*args))
+    def _get_n_step_info(self) -> Tuple[float, Dict, bool]:
+        reward = 0
+        next_state = None
+        done = False
 
-    def sample(self, batch_size):
-        transitions = random.sample(self.buffer, batch_size)
-        return Transition(*zip(*transitions))
+        for idx, (_, _, rew, next_s, done) in enumerate(self.n_step_buffer):
+            reward += (self.gamma ** idx) * rew
+            if done:
+                next_state = next_s
+                break
+            
+        if not done:
+            next_state = self.n_step_buffer[-1][3]
+            
+        return reward, next_state, done
 
-    def __len__(self):
+    def push(self, state: Dict, action: int, reward: float, next_state: Dict, done: bool):
+        max_priority = self.priorities.max() if self.buffer else 1.0
+        
+        self.n_step_buffer.append((state, action, reward, next_state, done))
+        
+        if len(self.n_step_buffer) < N_STEP:
+            return
+            
+        reward, next_state, done = self._get_n_step_info()
+        state = self.n_step_buffer[0][0]
+        action = self.n_step_buffer[0][1]
+
+        if len(self.buffer) < self.capacity:
+            self.buffer.append(None)
+        
+        self.buffer[self.position] = Transition(state, action, reward, next_state, done, max_priority)
+        self.priorities[self.position] = max_priority
+        self.position = (self.position + 1) % self.capacity
+
+    def sample(self, batch_size: int, beta: float = 0.4) -> Tuple:
+        if len(self.buffer) < batch_size:
+            return None
+
+        probs = self.priorities[:len(self.buffer)] ** ALPHA
+        probs /= probs.sum()
+
+        indices = np.random.choice(len(self.buffer), batch_size, p=probs)
+        samples = [self.buffer[idx] for idx in indices]
+
+        weights = (len(self.buffer) * probs[indices]) ** (-beta)
+        weights /= weights.max()
+        weights = torch.FloatTensor(weights).to(device)
+
+        # Convert dictionary observations to tensors with consistent shapes
+        states = {
+            'agent_pos': torch.FloatTensor(np.vstack([s.state['agent_pos'] for s in samples])).to(device),  # [batch_size, 2]
+            'agent_orient': torch.FloatTensor([s.state['agent_orient'] for s in samples]).reshape(-1).to(device),  # [batch_size]
+            'local_view': torch.FloatTensor(np.vstack([s.state['local_view'] for s in samples])).to(device)  # [batch_size, 3]
+        }
+        actions = torch.LongTensor([s.action for s in samples]).to(device)
+        rewards = torch.FloatTensor([s.reward for s in samples]).to(device)
+        next_states = {
+            'agent_pos': torch.FloatTensor(np.vstack([s.next_state['agent_pos'] for s in samples])).to(device),  # [batch_size, 2]
+            'agent_orient': torch.FloatTensor([s.next_state['agent_orient'] for s in samples]).reshape(-1).to(device),  # [batch_size]
+            'local_view': torch.FloatTensor(np.vstack([s.next_state['local_view'] for s in samples])).to(device)  # [batch_size, 3]
+        }
+        dones = torch.FloatTensor([s.done for s in samples]).to(device)
+
+        return states, actions, rewards, next_states, dones, indices, weights
+
+    def update_priorities(self, indices: List[int], priorities: np.ndarray):
+        for idx, priority in zip(indices, priorities):
+            self.priorities[idx] = priority
+
+    def __len__(self) -> int:
         return len(self.buffer)
 
-def project_distribution(next_dist, rewards, dones, gamma):
-    batch_size = rewards.size(0)
-    atoms = next_dist.size(2)
-    support = torch.linspace(-10, 10, atoms).to(device)
-    delta_z = (support[-1] - support[0]) / (atoms - 1)
-    projection = torch.zeros_like(next_dist)
+def project_distribution(next_dist, rewards, dones, support, delta_z, gamma):
+    batch_size = len(rewards)
+    atoms = len(support)
+    
+    rewards = rewards.unsqueeze(1)
+    dones = dones.unsqueeze(1)
+    support = support.unsqueeze(0)
+    
+    Tz = rewards + (1 - dones) * gamma * support
+    Tz = Tz.clamp(min=V_MIN, max=V_MAX)
+    b = (Tz - V_MIN) / delta_z
+    l = b.floor().long()
+    u = b.ceil().long()
+    
+    proj_dist = torch.zeros_like(next_dist)
+    
+    for i in range(batch_size):
+        for j in range(atoms):
+            proj_dist[i][l[i][j]] += next_dist[i][j] * (u[i][j] - b[i][j])
+            proj_dist[i][u[i][j]] += next_dist[i][j] * (b[i][j] - l[i][j])
+            
+    return proj_dist
 
-    for j in range(atoms):
-        tz_j = rewards + gamma * support[j] * (1 - dones)
-        tz_j = tz_j.clamp(support[0], support[-1])
-        b_j = (tz_j - support[0]) / delta_z
-        l, u = b_j.floor().long(), b_j.ceil().long()
+def rollout_and_record(env, policy_net, filename="rainbow_run.mp4", max_steps=500, walls=None):
+    """Record a video of the agent's performance"""
+    print(f"\nRecording video for {max_steps} steps...")
+    obs, _ = env.reset(options={"walls": walls})
+    frames = []
 
-        for i in range(batch_size):
-            if l[i] == u[i]:
-                projection[i, :, l[i]] += next_dist[i, :, j]
-            else:
-                projection[i, :, l[i]] += next_dist[i, :, j] * (u[i] - b_j[i])
-                projection[i, :, u[i]] += next_dist[i, :, j] * (b_j[i] - l[i])
-    return projection
+    for step in range(max_steps):
+        # Render and save frame
+        fig = env.render_frame()
+        frames.append(fig)
 
-def save_video(frames, filename, fps=30):
-    height, width, _ = frames[0].shape
-    out = cv2.VideoWriter(filename, cv2.VideoWriter_fourcc(*'mp4v'), fps, (width, height))
-    for frame in frames:
-        frame_bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-        out.write(frame_bgr)
-    out.release()
+        # Get action from policy
+        action = policy_net.act(obs, epsilon=0.0)  # No exploration during recording
+        obs, _, terminated, truncated, _ = env.step(action)
 
-def evaluate(policy_net, env_id="Vacuum-v0", episodes=5, render=True):
-    env = gym.make(env_id, render_mode="rgb_array")
-    rewards = []
+        if terminated or truncated:
+            break
 
-    for ep in range(episodes):
-        obs, _ = env.reset()
-        done, total_reward = False, 0
-        frames = []
+    print(f"Recorded {len(frames)} frames")
+    
+    # Create animation
+    fig, ax = plt.subplots()
+    im = ax.imshow(frames[0])
+    ax.axis("off")
 
-        while not done:
-            action = policy_net.act(obs, epsilon=0.0, action_dim=env.action_space.n)
-            obs, reward, done, truncated, _ = env.step(action)
-            total_reward += reward
-            if render:
-                frame = env.render()
-                frames.append(frame)
+    def update(i):
+        im.set_array(frames[i])
+        return [im]
 
-        rewards.append(total_reward)
-        if render:
-            save_video(frames, f"eval_ep_{ep + 1}.mp4")
-        print(f"Episode {ep + 1}: Reward = {total_reward:.2f}")
+    ani = animation.FuncAnimation(
+        fig, update, frames=len(frames), interval=100, blit=True
+    )
 
-    env.close()
-    return rewards
+    # Save animation
+    ani.save(filename, writer="ffmpeg")
+    plt.close(fig)
+    print(f"Video saved to: {filename}")
 
-def train(env_id="Vacuum-v0", total_timesteps=50000):
-    env = gym.make(env_id)
-    obs_dim = env.observation_space.shape[0]
+def plot_training_metrics(metrics: Dict[str, List[float]]):
+    """Plot and save training metrics"""
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    fig.suptitle("Rainbow DQN Training Metrics")
+
+    # Plot episode rewards
+    axes[0, 0].plot(metrics["episode_rewards"])
+    axes[0, 0].set_title("Episode Rewards")
+    axes[0, 0].set_xlabel("Episode")
+    axes[0, 0].set_ylabel("Reward")
+
+    # Plot episode lengths
+    axes[0, 1].plot(metrics["episode_lengths"])
+    axes[0, 1].set_title("Episode Lengths")
+    axes[0, 1].set_xlabel("Episode")
+    axes[0, 1].set_ylabel("Steps")
+
+    # Plot coverage ratio
+    if metrics["coverage_ratio"]:
+        axes[0, 2].plot(metrics["coverage_ratio"])
+        axes[0, 2].set_title("Coverage Ratio")
+        axes[0, 2].set_xlabel("Episode")
+        axes[0, 2].set_ylabel("Ratio")
+
+        # Plot path efficiency
+        axes[1, 0].plot(metrics["path_efficiency"])
+        axes[1, 0].set_title("Path Efficiency")
+        axes[1, 0].set_xlabel("Episode")
+        axes[1, 0].set_ylabel("Efficiency")
+
+        # Plot revisit ratio
+        axes[1, 1].plot(metrics["revisit_ratio"])
+        axes[1, 1].set_title("Revisit Ratio")
+        axes[1, 1].set_xlabel("Episode")
+        axes[1, 1].set_ylabel("Ratio")
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(LOG_DIR, "training_metrics.png"))
+    plt.close()
+
+def print_section_header(title):
+    print("\n" + "="*50)
+    print(f"{title:^50}")
+    print("="*50)
+
+def print_metrics(metrics, prefix=""):
+    print(f"{prefix}Metrics:")
+    print("-"*30)
+    for key, value in metrics.items():
+        if isinstance(value, float):
+            print(f"{prefix}{key:20}: {value:.4f}")
+        else:
+            print(f"{prefix}{key:20}: {value}")
+
+def print_progress_bar(iteration, total, prefix='', suffix='', decimals=1, length=50, fill='█'):
+    percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
+    filled_length = int(length * iteration // total)
+    bar = fill * filled_length + '-' * (length - filled_length)
+    print(f'\r{prefix} |{bar}| {percent}% {suffix}', end='\r')
+    if iteration == total:
+        print()
+
+def save_model(model, filename):
+    """Save model state dict to file"""
+    save_path = os.path.join(LOG_DIR, filename)
+    # Save model state and training info
+    save_dict = {
+        'state_dict': model.state_dict(),
+        'device': str(next(model.parameters()).device),
+        'training': model.training
+    }
+    torch.save(save_dict, save_path)
+    print(f"\nModel saved to: {save_path} (device: {save_dict['device']}, training: {save_dict['training']})")
+
+def load_model(model, filename):
+    """Load model state dict from file"""
+    load_path = os.path.join(LOG_DIR, filename)
+    if os.path.exists(load_path):
+        # Load with device mapping
+        checkpoint = torch.load(load_path, map_location=device)
+        
+        if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['state_dict'])
+            saved_device = checkpoint.get('device', 'unknown')
+            saved_training = checkpoint.get('training', 'unknown')
+            print(f"\nModel loaded from: {load_path}")
+            print(f"Original device: {saved_device}, Current device: {device}")
+            print(f"Original training mode: {saved_training}, Current training mode: {model.training}")
+        else:
+            # Handle old format
+            model.load_state_dict(checkpoint)
+            print(f"\nModel loaded from: {load_path} (old format)")
+            print(f"Current device: {device}, Current training mode: {model.training}")
+        
+        return model
+    else:
+        print(f"\nNo saved model found at: {load_path}")
+        return None
+
+def get_log_dir(grid_size):
+    """Create and return log directory based on grid size"""
+    log_dir = os.path.join(BASE_LOG_DIR, f"rainbow_dqn_{grid_size[0]}x{grid_size[1]}")
+    os.makedirs(log_dir, exist_ok=True)
+    return log_dir
+
+def train(env_id: str = "Vacuum-v0", grid_size: tuple = (6, 6), total_timesteps: int = 50000, save_freq: int = 10000, walls=None, from_scratch=False):
+    LOG_DIR = get_log_dir(grid_size)
+    
+    print_section_header("Starting Training")
+    print(f"Environment: {env_id}")
+    print(f"Grid Size: {grid_size[0]}x{grid_size[1]}")
+    print(f"Wall Mode: {'hardcoded' if walls is not None else 'random'}")
+    print(f"Total timesteps: {total_timesteps}")
+    print(f"Saving model every {save_freq} steps")
+    
+    # Initialize TensorBoard writer
+    writer = SummaryWriter(os.path.join(LOG_DIR, 'tensorboard'))
+    print(f"TensorBoard logs will be saved to: {os.path.join(LOG_DIR, 'tensorboard')}")
+    
+    # Create and wrap environment with metrics and additional wrappers
+    env = gym.make(env_id, grid_size=grid_size, use_counter=False)  # Add grid_size parameter
+    env = TimeLimit(env, max_episode_steps=500)
+    env = ExplorationBonusWrapper(env, bonus=0.3)
+    env = ExploitationPenaltyWrapper(env, time_penalty=-0.002, stay_penalty=-0.1)
+    env = MetricWrapper(env)
+    
+    print("\nEnvironment Wrappers:")
+    print("- TimeLimit: 500 steps")
+    print("- ExplorationBonus: +0.3")
+    print("- ExploitationPenalty: time=-0.002, stay=-0.1")
+    print("- MetricWrapper: enabled")
+    print("- Internal stuck counter: disabled")
+    
+    # Initialize metrics dictionary
+    training_metrics = {
+        "episode_rewards": [],
+        "episode_lengths": [],
+        "coverage_ratio": [],
+        "path_efficiency": [],
+        "revisit_ratio": [],
+        "cleaning_time": [],
+        "losses": []
+    }
+    
+    print_section_header("Network Architecture")
+    obs_dim = {
+        'agent_pos': env.observation_space['agent_pos'].shape[0],
+        'agent_orient': 1,
+        'local_view': env.observation_space['local_view'].shape[0]
+    }
     n_actions = env.action_space.n
+    print(f"Observation dimensions: {obs_dim}")
+    print(f"Number of actions: {n_actions}")
+    print(f"Number of atoms: {N_ATOMS}")
 
+    # Initialize networks and optimizer
     policy_net = RainbowDQN(obs_dim, n_actions).to(device)
     target_net = RainbowDQN(obs_dim, n_actions).to(device)
     target_net.load_state_dict(policy_net.state_dict())
-
     optimizer = optim.Adam(policy_net.parameters(), lr=LR)
-    buffer = ReplayBuffer(BUFFER_SIZE)
+    
+    # Try to load latest checkpoint if exists
+    latest_model = load_model(policy_net, "latest_model.pth")
+    if latest_model is not None and not from_scratch:
+        policy_net = latest_model
+        target_net.load_state_dict(policy_net.state_dict())
+    
+    # Initialize replay buffer
+    buffer = PrioritizedReplayBuffer(BUFFER_SIZE)
 
-    obs, _ = env.reset()
-    epsilon = 1.0
+    print_section_header("Training Parameters")
+    print(f"Learning rate: {LR}")
+    print(f"Batch size: {BATCH_SIZE}")
+    print(f"Buffer size: {BUFFER_SIZE}")
+    print(f"Training device: {device}")
+    print(f"Gamma: {GAMMA}")
+    print(f"Start training at: {START_TRAINING} steps")
+    print(f"Target network update frequency: {UPDATE_TARGET_EVERY}")
+    print("\nStarting training loop...")
+
+    obs, _ = env.reset(options={"walls": walls})
     episode_reward = 0
+    episode_count = 0
+    episode_steps = 0
+    total_loss = 0
+    num_updates = 0
+    beta = BETA
+
+    best_reward = float('-inf')
 
     for step in range(total_timesteps):
-        action = policy_net.act(obs, epsilon, n_actions)
-        next_obs, reward, done, _, _ = env.step(action)
-        buffer.push(obs, action, reward, next_obs, float(done))
+        if step % 100 == 0:
+            print_progress_bar(step, total_timesteps, prefix='Progress:', suffix='Complete', length=40)
+            
+        episode_steps += 1
+        policy_net.reset_noise()
+        
+        action = policy_net.act(obs)
+        next_obs, reward, terminated, truncated, info = env.step(action)
+        done = terminated or truncated
+        
+        buffer.push(obs, action, reward, next_obs, done)
+        
         obs = next_obs
         episode_reward += reward
 
         if done:
-            obs, _ = env.reset()
-            print(f"Step {step}: Episode Reward = {episode_reward:.2f}")
+            episode_count += 1
+            avg_loss = total_loss/max(1, num_updates)
+            
+            # Log metrics to TensorBoard
+            writer.add_scalar('Train/Episode_Reward', episode_reward, episode_count)
+            writer.add_scalar('Train/Episode_Length', episode_steps, episode_count)
+            writer.add_scalar('Train/Average_Loss', avg_loss, episode_count)
+            
+            if "coverage_ratio" in info:
+                writer.add_scalar('Train/Coverage_Ratio', info["coverage_ratio"], episode_count)
+                writer.add_scalar('Train/Path_Efficiency', info["path_efficiency"], episode_count)
+                writer.add_scalar('Train/Revisit_Ratio', info["revisit_ratio"], episode_count)
+            
+            # Save best model if this is the best reward
+            if episode_reward > best_reward:
+                best_reward = episode_reward
+                save_model(policy_net, "best_model.pth")
+                print(f"\nNew best reward: {best_reward:.2f}")
+            
+            # Log metrics to dictionary
+            training_metrics["episode_rewards"].append(episode_reward)
+            training_metrics["episode_lengths"].append(episode_steps)
+            if "coverage_ratio" in info:
+                training_metrics["coverage_ratio"].append(info["coverage_ratio"])
+                training_metrics["path_efficiency"].append(info["path_efficiency"])
+                training_metrics["revisit_ratio"].append(info["revisit_ratio"])
+            
+            print_section_header(f"Episode {episode_count} Complete")
+            print(f"Steps: {episode_steps}")
+            print(f"Total Reward: {episode_reward:.2f}")
+            print(f"Average Loss: {avg_loss:.4f}")
+            if "coverage_ratio" in info:
+                print("\nCleaning Metrics:")
+                print(f"Coverage: {info['coverage_ratio']:.2%}")
+                print(f"Path Efficiency: {info['path_efficiency']:.2f}")
+                print(f"Revisit Ratio: {info['revisit_ratio']:.2f}")
+            
+            obs, _ = env.reset(options={"walls": walls})
             episode_reward = 0
-            epsilon = max(MIN_EPSILON, epsilon * EPSILON_DECAY)
+            episode_steps = 0
+            total_loss = 0
+            num_updates = 0
 
+        # Training
         if len(buffer) >= START_TRAINING:
-            batch = buffer.sample(BATCH_SIZE)
-            state = torch.FloatTensor(batch.state).to(device)
-            action = torch.LongTensor(batch.action).unsqueeze(1).unsqueeze(1).expand(-1, 1, policy_net.atoms).to(device)
-            reward = torch.FloatTensor(batch.reward).to(device)
-            next_state = torch.FloatTensor(batch.next_state).to(device)
-            done = torch.FloatTensor(batch.done).to(device)
+            beta = min(1.0, beta + BETA_INCREMENT)
+            batch = buffer.sample(BATCH_SIZE, beta)
+            if batch is not None:
+                states, actions, rewards, next_states, dones, indices, weights = batch
 
-            dist = policy_net(state)
-            dist = dist.gather(1, action).squeeze(1)
+                # Current Q-distribution
+                current_q_dist = policy_net(states)
+                current_q_dist = current_q_dist[range(BATCH_SIZE), actions]
 
-            with torch.no_grad():
-                next_dist = target_net(next_state)
-                next_action = torch.sum(next_dist * target_net.support, dim=2).argmax(1)
-                next_dist = next_dist[range(BATCH_SIZE), next_action]
-                target = project_distribution(next_dist.unsqueeze(1), reward, done, GAMMA)
+                # Next Q-distribution (from target network)
+                with torch.no_grad():
+                    next_actions = (policy_net(next_states) * policy_net.support).sum(2).argmax(1)
+                    next_q_dist = target_net(next_states)
+                    next_q_dist = next_q_dist[range(BATCH_SIZE), next_actions]
 
-            loss = -torch.sum(target * dist.log(), dim=1).mean()
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+                    target_q_dist = project_distribution(
+                        next_q_dist, rewards, dones,
+                        policy_net.support,
+                        policy_net.delta_z,
+                        GAMMA
+                    )
+
+                loss = -(target_q_dist * current_q_dist.log()).sum(1)
+                priorities = loss.detach().cpu().numpy()
+                loss = (loss * weights).mean()
+                
+                # Log training loss to TensorBoard
+                writer.add_scalar('Train/Loss', loss.item(), step)
+                
+                total_loss += loss.item()
+                num_updates += 1
+
+                optimizer.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(policy_net.parameters(), 10)
+                optimizer.step()
+
+                buffer.update_priorities(indices, priorities)
 
             if step % UPDATE_TARGET_EVERY == 0:
                 target_net.load_state_dict(policy_net.state_dict())
+                print(f"\nUpdated target network at step {step}")
 
+        # Save model periodically
+        if step > 0 and step % save_freq == 0:
+            save_model(policy_net, f"model_step_{step}.pth")
+            save_model(policy_net, "latest_model.pth")  # Always keep the latest model
+
+    print_section_header("Training Complete")
+    print(f"Total episodes: {episode_count}")
+    print("\nSaving metrics and plots...")
+    
+    # Save final model
+    save_model(policy_net, "final_model.pth")
+    
+    # Save training metrics
+    metrics_file = os.path.join(LOG_DIR, "training_metrics.json")
+    with open(metrics_file, "w") as f:
+        json.dump(training_metrics, f)
+
+    # Plot training metrics
+    plot_training_metrics(training_metrics)
+    print(f"Metrics saved to: {metrics_file}")
+    print(f"Plots saved to: {LOG_DIR}")
+    
+    # Close TensorBoard writer
+    writer.close()
     env.close()
     return policy_net
 
+def evaluate(policy_net, env_id="Vacuum-v0", grid_size=(6, 6), episodes=5, render=True, walls=None):
+    LOG_DIR = get_log_dir(grid_size)
+    
+    print_section_header("Starting Evaluation")
+    print(f"Environment: {env_id}")
+    print(f"Grid Size: {grid_size[0]}x{grid_size[1]}")
+    print(f"Wall Mode: {'hardcoded' if walls is not None else 'random'}")
+    print(f"Number of episodes: {episodes}")
+    print(f"Rendering: {'enabled' if render else 'disabled'}")
+    print(f"Device: {next(policy_net.parameters()).device}")
+    print(f"Training mode before eval(): {policy_net.training}")
+    
+    # Create and wrap environment with same wrappers as training
+    env = gym.make(env_id, grid_size=grid_size, render_mode="plot", use_counter=False)
+    env = TimeLimit(env, max_episode_steps=500)
+    env = ExplorationBonusWrapper(env, bonus=0.3)
+    env = ExploitationPenaltyWrapper(env, time_penalty=-0.002, stay_penalty=-0.1)
+    env = MetricWrapper(env)
+    
+    print("\nEnvironment Wrappers:")
+    print("- TimeLimit: 500 steps")
+    print("- ExplorationBonus: +0.3")
+    print("- ExploitationPenalty: time=-0.002, stay=-0.1")
+    print("- MetricWrapper: enabled")
+    print("- Internal stuck counter: disabled")
+    
+    # Ensure model is in evaluation mode for deterministic behavior
+    policy_net.eval()
+    print(f"Training mode after eval(): {policy_net.training}")
+    
+    metrics = {
+        "episode_rewards": [],
+        "episode_lengths": [],
+        "coverage_ratio": [],
+        "path_efficiency": [],
+        "revisit_ratio": [],
+        "cleaning_time": []
+    }
+
+    # Evaluate the last few episodes in reverse order
+    for ep in range(episodes - 1, -1, -1):
+        print_section_header(f"Evaluation Episode {episodes - ep}")
+        obs, _ = env.reset(options={"walls": walls})
+        done = False
+        total_reward = 0
+        steps = 0
+
+        while not done:
+            # Use deterministic actions during evaluation (no noise, no epsilon)
+            with torch.no_grad():  # Ensure no gradients during evaluation
+                action = policy_net.act(obs, epsilon=0.0)
+            obs, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+            total_reward += reward
+            steps += 1
+
+        # Log metrics
+        metrics["episode_rewards"].append(total_reward)
+        metrics["episode_lengths"].append(steps)
+        if "coverage_ratio" in info:
+            metrics["coverage_ratio"].append(info["coverage_ratio"])
+            metrics["path_efficiency"].append(info["path_efficiency"])
+            metrics["revisit_ratio"].append(info["revisit_ratio"])
+
+        print("\nEpisode Results:")
+        print(f"Steps: {steps}")
+        print(f"Total Reward: {total_reward:.2f}")
+        print("\nCleaning Metrics:")
+        print(f"Coverage: {info.get('coverage_ratio', 0):.2%}")
+        print(f"Path Efficiency: {info.get('path_efficiency', 0):.2f}")
+        print(f"Revisit Ratio: {info.get('revisit_ratio', 0):.2f}")
+        
+        if render:
+            video_path = os.path.join(LOG_DIR, f"eval_ep_{episodes - ep}.mp4")
+            rollout_and_record(env.unwrapped, policy_net, filename=video_path, walls=walls)
+            print(f"\nSaved video: {video_path}")
+
+    # Calculate and print summary statistics
+    print_section_header("Evaluation Summary")
+    summary_metrics = {
+        "Average Reward": sum(metrics["episode_rewards"]) / episodes,
+        "Average Steps": sum(metrics["episode_lengths"]) / episodes,
+        "Average Coverage": sum(metrics["coverage_ratio"]) / episodes if metrics["coverage_ratio"] else 0,
+        "Average Path Efficiency": sum(metrics["path_efficiency"]) / episodes if metrics["path_efficiency"] else 0,
+        "Average Revisit Ratio": sum(metrics["revisit_ratio"]) / episodes if metrics["revisit_ratio"] else 0,
+        "Best Episode Reward": max(metrics["episode_rewards"]),
+        "Worst Episode Reward": min(metrics["episode_rewards"])
+    }
+    
+    print_metrics(summary_metrics)
+
+    # Save evaluation metrics
+    metrics_file = os.path.join(LOG_DIR, "evaluation_metrics.json")
+    with open(metrics_file, "w") as f:
+        json.dump(metrics, f)
+    print(f"\nMetrics saved to: {metrics_file}")
+
+    env.close()
+    return metrics
+
 if __name__ == "__main__":
-    model = train()
-    evaluate(model)
+    parser = argparse.ArgumentParser(description='Train or evaluate Rainbow DQN')
+    parser.add_argument('--mode', choices=['train', 'eval'], default='train',
+                      help='Whether to train a new model or evaluate an existing one')
+    parser.add_argument('--model_path', type=str, default='best_model.pth',
+                      help='Path to model file for evaluation (relative to LOG_DIR)')
+    parser.add_argument('--timesteps', type=int, default=50000,
+                      help='Number of timesteps to train for')
+    parser.add_argument('--eval_episodes', type=int, default=5,
+                      help='Number of episodes to evaluate for')
+    parser.add_argument('--grid_size', type=int, nargs=2, default=[6, 6],
+                      help='Grid size as two integers (e.g., 6 6 for 6x6 grid)')
+    parser.add_argument('--wall_mode', choices=['random', 'hardcoded'], default='random',
+                      help='Wall layout: "random" or "hardcoded" (only applies to 40x30 grid)')
+    parser.add_argument('--from_scratch', action='store_true',
+                      help='Start training from scratch, ignoring any existing checkpoints')
+    args = parser.parse_args()
+
+    grid_size = tuple(args.grid_size)
+    LOG_DIR = get_log_dir(grid_size)
+
+    # Import hardcoded wall layout if needed
+    walls = None
+    if args.wall_mode == 'hardcoded' and grid_size == (40, 30):
+        from run import generate_1b1b_layout_grid
+        walls = generate_1b1b_layout_grid()
+
+    if args.mode == 'train':
+        # Train a new model
+        model = train(total_timesteps=args.timesteps, grid_size=grid_size, walls=walls, from_scratch=args.from_scratch)
+        # Evaluate the trained model
+        evaluate(model, grid_size=grid_size, episodes=args.eval_episodes, walls=walls)
+    else:
+        # Create a new model instance
+        env = gym.make("Vacuum-v0", grid_size=grid_size)
+        obs_dim = {
+            'agent_pos': env.observation_space['agent_pos'].shape[0],
+            'agent_orient': 1,
+            'local_view': env.observation_space['local_view'].shape[0]
+        }
+        n_actions = env.action_space.n
+        model = RainbowDQN(obs_dim, n_actions).to(device)
+        env.close()
+
+        # Load and evaluate the model
+        loaded_model = load_model(model, args.model_path)
+        if loaded_model is not None:
+            # Ensure model is in evaluation mode
+            loaded_model.eval()
+            evaluate(loaded_model, grid_size=grid_size, episodes=args.eval_episodes, walls=walls)
+        else:
+            print(f"Could not find model at {os.path.join(LOG_DIR, args.model_path)}")

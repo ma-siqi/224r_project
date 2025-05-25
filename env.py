@@ -218,7 +218,8 @@ class VacuumEnv(gym.Env):
 
         return self._get_obs(), reward, terminated, truncated, {
             "all_cleaned": all_cleaned,
-            "returned_home": at_start
+            "returned_home": at_start,
+            "path_map": self.path_map
         }
 
     def render(self):
