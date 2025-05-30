@@ -15,8 +15,9 @@ class VacuumEnv(gym.Env):
         penalty_forward=-0.1,
         penalty_rotation=-0.05,
         penalty_invalid_move=-1.0,
-        reward_return_home=100.0,
+        reward_return_home=10000.0,
         penalty_delay_return=-0.05,
+        dirty_ratio=0.9,
         render_mode=None,
         use_counter=True
     ):
@@ -45,6 +46,7 @@ class VacuumEnv(gym.Env):
         } # define the 8 directions
 
         self.start_pos = [0, 0] # agent starting position is the upper-left corner
+        self.dirty_ratio = dirty_ratio # ratio of dirty tiles
 
         self.rng = np.random.default_rng()  # used to generate random layouts
         self.render_mode = render_mode
@@ -57,14 +59,20 @@ class VacuumEnv(gym.Env):
 
         # layout reset
         self.cleaned_map = np.zeros(self.grid_size, dtype=np.uint8)
-        self.dirt_map = np.ones(self.grid_size, dtype=np.uint8)
-        self.obstacle_map = np.zeros(self.grid_size, dtype=np.uint8)
 
+        # generate obstacle layout
+        self.obstacle_map = np.zeros(self.grid_size, dtype=np.uint8)
         walls = options.get("walls") if options else None
         if walls is not None:
             self.add_wall(walls)
         else:
             self.generate_random_rooms()
+
+        # generate dirt layout: only dirty_ratio non-obstacle tiles are dirty
+        self.dirt_map = np.zeros(self.grid_size, dtype=np.uint8)
+        cleanable_mask = (self.obstacle_map == 0)
+        random_dirty = self.rng.random(self.grid_size) < self.dirty_ratio
+        self.dirt_map[np.logical_and(cleanable_mask, random_dirty)] = 1
 
         self.agent_pos = list(self.start_pos)
         self.agent_orient = 2 # agent starting orientation is facing right
@@ -100,18 +108,22 @@ class VacuumEnv(gym.Env):
                     wall_col = right - 1
                     self.obstacle_map[top:bottom, wall_col] = 1
 
-                    # Punch a door randomly
-                    door_y = self.rng.integers(top + 1, bottom - 1)
-                    self.obstacle_map[door_y, wall_col] = 0
+                    # Punch a wider door randomly (2–3 tiles)
+                    door_y = self.rng.integers(top + 1, bottom - 2)
+                    door_height = self.rng.integers(2, 4)  # width of door (2–3 tiles)
+                    for dy in range(door_y, min(bottom - 1, door_y + door_height)):
+                        self.obstacle_map[dy, wall_col] = 0
 
                 # Draw horizontal wall below (if not last row)
                 if i < rows - 1:
                     wall_row = bottom - 1
                     self.obstacle_map[wall_row, left:right] = 1
 
-                    # Punch a door randomly
-                    door_x = self.rng.integers(left + 1, right - 1)
-                    self.obstacle_map[wall_row, door_x] = 0
+                    # Punch a wider door randomly (2–3 tiles)
+                    door_x = self.rng.integers(left + 1, right - 2)
+                    door_width = self.rng.integers(2, 4)
+                    for dx in range(door_x, min(right - 1, door_x + door_width)):
+                        self.obstacle_map[wall_row, dx] = 0
 
         # Ensure start_pos is not blocked
         sx, sy = self.start_pos
@@ -172,6 +184,9 @@ class VacuumEnv(gym.Env):
             self.agent_orient = (self.agent_orient + 1) % 8
             reward += self.penalty_rotation # rotation cost
 
+        if not hasattr(self, 'prev_dirty_count'):
+            self.prev_dirty_count = np.sum(self.dirt_map == 1)
+
         x, y = self.agent_pos
         if moved:
             # count visits to each cell
@@ -183,12 +198,20 @@ class VacuumEnv(gym.Env):
                 self.dirt_map[x, y] = 0
                 self.cleaned_map[x, y] = 1
             else:
-                reward += self.penalty_revisit # revisiting a cleaned tile penalty
+                visits = self.path_map[x, y]
+                revisit_penalty = self.penalty_revisit * visits
+                reward += revisit_penalty # revisiting a cleaned tile penalty scaled by number of visits
+
+        current_dirty_count = np.sum(self.dirt_map == 1)
+        progress = self.prev_dirty_count - current_dirty_count
+        if progress > 0:
+            reward += progress * 0.5  # Can tune this
+        self.prev_dirty_count = current_dirty_count
 
         # track previous position
         self.prev_pos = list(self.agent_pos)
 
-        # only apply stay penalties if enabled
+        # only apply stay penalties if enabled, if using wrappers, not enabled
         if self.use_internal_stuck_penalty:
             if self.agent_pos == self.prev_pos:
                 self.stay_counter += 1
@@ -202,7 +225,7 @@ class VacuumEnv(gym.Env):
             if self.stay_counter >= 20:
                 reward += -40.0
 
-        all_cleaned = np.all(self.dirt_map[self.obstacle_map == 0] == 0) # check if all tiles are cleaned
+        all_cleaned = np.all(self.dirt_map == 0) # check if all tiles are cleaned
         at_start = self.agent_pos == self.start_pos # check if agent is at starting position
         terminated = bool(all_cleaned and at_start) # task is done only if all cleaned and at start
         truncated = False

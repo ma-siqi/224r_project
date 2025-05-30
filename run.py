@@ -127,10 +127,59 @@ def generate_1b1b_layout_grid():
 
     return list(wall_positions)
 
+
+# --------------------------------------
+# Alternate fixed wall layout for evaluation
+# --------------------------------------
+def generate_eval_layout_grid():
+    wall_positions = set()
+
+    for x in range(2, 4):
+        for y in range(6, 9):
+            wall_positions.add((x, y))
+
+    for x in range(32, 36):
+        wall_positions.add((x, 3))
+    for y in range(2, 6):
+        wall_positions.add((34, y))
+    wall_positions.discard((33, 3))
+    wall_positions.discard((32, 3))
+
+    for x in range(4, 9):
+        wall_positions.add((x, 26))
+    for y in range(25, 29):
+        wall_positions.add((4, y))
+    wall_positions.discard((6, 26))
+    wall_positions.discard((7, 26))
+
+    for x in range(30, 34):
+        wall_positions.add((x, 27))
+    wall_positions.add((32, 28))
+
+    for y in range(10, 20):
+        wall_positions.add((8, y))
+    wall_positions.discard((8, 14))
+    wall_positions.discard((8, 15))
+
+    for x in range(10, 30):
+        wall_positions.add((x, 5))
+    wall_positions.discard((17, 5))
+    wall_positions.discard((18, 5))
+    wall_positions.discard((19, 5))
+
+    for x in range(12, 25):
+        wall_positions.add((x, 24))
+    wall_positions.discard((16, 24))
+    wall_positions.discard((17, 24))
+
+    wall_positions.discard((0, 0))
+
+    return list(wall_positions)
+
 # --------------------------------------
 # Rollout and save animation
 # --------------------------------------
-def rollout_and_record(env, model, filename="vacuum_run.mp4", max_steps=100):
+def rollout_and_record(env, model, filename="vacuum_run.mp4", max_steps=100, walls=None):
     obs, _ = env.reset(options={"walls": walls})
     frames = []
 
@@ -176,15 +225,23 @@ if __name__ == "__main__":
                         help="Grid size as two integers (e.g., 40 30)")
     parser.add_argument("--wall_mode", choices=["random", "hardcoded"], default="random",
                         help="Wall layout: 'random' or 'hardcoded' (only applies to 40x30)")
+    parser.add_argument("--dirty_ratio", type=float, default=0.9,
+                        help="Proportion of non-obstacle tiles that start dirty (0.0–1.0)")
     args = parser.parse_args()
 
     algo = args.algo
     total_timesteps = args.timesteps
     grid_size = tuple(args.grid_size)
     wall_mode = args.wall_mode
+    dirty_ratio = args.dirty_ratio
 
-    # Determine wall layout
-    walls = generate_1b1b_layout_grid() if wall_mode == "hardcoded" and grid_size == (40, 30) else None
+    # Determine wall layout for training and eval
+    if wall_mode == "hardcoded" and grid_size == (40, 30):
+        walls = generate_1b1b_layout_grid()
+        eval_walls = generate_eval_layout_grid()
+    else:
+        walls = None
+        eval_walls = None
 
     # Load best hyperparameters if available
     param_path = Path(f"optuna_results/{algo}_best_params.json")
@@ -194,13 +251,38 @@ if __name__ == "__main__":
     else:
         best_params = {}
 
-    if algo == "ppo":
+    if algo == "random":
+        # ---------------
+        # Random baseline
+        # ---------------
+        max_steps = 3000
+        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirty_ratio=dirty_ratio)
+        base_env = TimeLimit(base_env, max_episode_steps=max_steps)
+        base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
+        base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
+
+        # monitor for stats logging
+        base_env = MetricWrapper(base_env)
+
+        # reset before training
+        obs, _ = base_env.reset(options={"walls": eval_walls})
+        check_env(base_env, warn=True)
+
+        # evaluate the random agent
+        random_agent = RandomAgent(base_env.action_space)
+        metrics = evaluate_random_agent_steps(random_agent, base_env)
+        export_random_metrics(metrics, "best_param/random")
+        with open("random_metrics.json", "w") as f:
+            json.dump(metrics, f, indent=4)
+        rollout_and_record(base_env.unwrapped, random_agent, filename="random_agent.mp4", max_steps=max_steps, walls=eval_walls)
+
+    elif algo == "ppo":
         # --------------------------------------
         # PPO Training with wrappers and Monitor
         # --------------------------------------
         max_steps = 3000
 
-        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot")
+        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirty_ratio=dirty_ratio)
         base_env = TimeLimit(base_env, max_episode_steps=max_steps)
         base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
         base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
@@ -210,7 +292,7 @@ if __name__ == "__main__":
         monitored_env = Monitor(base_env)
 
         # evaluation environment
-        eval_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot")
+        eval_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirty_ratio=dirty_ratio)
         eval_env = TimeLimit(eval_env, max_episode_steps=max_steps)
         eval_env = ExplorationBonusWrapper(eval_env, bonus=0.3)
         eval_env = ExploitationPenaltyWrapper(eval_env, time_penalty=-0.002, stay_penalty=-0.1)
@@ -220,7 +302,7 @@ if __name__ == "__main__":
 
         # reset before training
         obs, _ = monitored_env.reset(options={"walls": walls})
-        obs, _ = eval_env.reset(options={"walls": walls})
+        obs, _ = eval_env.reset(options={"walls": eval_walls})
         check_env(monitored_env, warn=True)
         check_env(eval_env, warn=True)
 
@@ -236,48 +318,23 @@ if __name__ == "__main__":
         model.learn(
             total_timesteps=total_timesteps,
             callback=MetricCallback(),
-            )
+        )
 
         # Save the final trajectory
         print("Saving PPO training trajectory...")
-        rollout_and_record(monitored_env.unwrapped, model, filename="ppo_train.mp4", max_steps=max_steps)
+        rollout_and_record(monitored_env.unwrapped, model, filename="ppo_train.mp4", max_steps=3000, walls=walls)
 
         # Save best eval trajectory
         print("Saving PPO eval trajectory...")
-        rollout_and_record(eval_env.unwrapped, model, filename="ppo_eval.mp4", max_steps=max_steps)
-
-    elif algo == "random":
-        # ---------------
-        # Random baseline
-        # ---------------
-        max_steps = 3000
-        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot")
-        base_env = TimeLimit(base_env, max_episode_steps=max_steps)
-        base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
-        base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
-
-        # monitor for stats logging
-        base_env = MetricWrapper(base_env)
-
-        # reset before training
-        obs, _ = base_env.reset(options={"walls": walls})
-        check_env(base_env, warn=True)
-
-        # evaluate the random agent
-        random_agent = RandomAgent(base_env.action_space)
-        metrics = evaluate_random_agent_steps(random_agent, base_env)
-        export_random_metrics(metrics, "best_param/random")
-        with open("random_metrics.json", "w") as f:
-            json.dump(metrics, f, indent=4)
-        rollout_and_record(base_env.unwrapped, random_agent, filename="random_agent.mp4", max_steps=max_steps)
+        rollout_and_record(eval_env.unwrapped, model, filename="ppo_eval.mp4", max_steps=3000, walls=eval_walls)
 
     elif algo == "dqn":
         # --------------------------------------
         # DQN Training with wrappers and Monitor
         # --------------------------------------
-        max_steps = 500
+        max_steps = 3000
 
-        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot")
+        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirty_ratio=dirty_ratio)
         base_env = TimeLimit(base_env, max_episode_steps=max_steps)
         base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
         base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
@@ -285,7 +342,7 @@ if __name__ == "__main__":
         base_env = MetricWrapper(base_env)
         monitored_env = Monitor(base_env)
 
-        eval_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot")
+        eval_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirty_ratio=dirty_ratio)
         eval_env = TimeLimit(eval_env, max_episode_steps=max_steps)
         eval_env = ExplorationBonusWrapper(eval_env, bonus=0.3)
         eval_env = ExploitationPenaltyWrapper(eval_env, time_penalty=-0.002, stay_penalty=-0.1)
@@ -294,7 +351,7 @@ if __name__ == "__main__":
         eval_env = Monitor(eval_env)
 
         obs, _ = monitored_env.reset(options={"walls": walls})
-        obs, _ = eval_env.reset(options={"walls": walls})
+        obs, _ = eval_env.reset(options={"walls": eval_walls})
         check_env(monitored_env, warn=True)
         check_env(eval_env, warn=True)
 
@@ -303,7 +360,6 @@ if __name__ == "__main__":
             monitored_env,
             verbose=1,
             tensorboard_log="./tensorboard/",
-            exploration_final_eps=0.05,
             **best_params
         )
 
@@ -313,10 +369,10 @@ if __name__ == "__main__":
         )
 
         print("Saving DQN training trajectory...")
-        rollout_and_record(monitored_env.unwrapped, model, filename="dqn_train.mp4", max_steps=3000)
+        rollout_and_record(monitored_env.unwrapped, model, filename="dqn_train.mp4", max_steps=6000, walls=walls)
 
         print("Saving DQN eval trajectory...")
-        rollout_and_record(eval_env.unwrapped, model, filename="dqn_eval.mp4", max_steps=3000)
+        rollout_and_record(eval_env.unwrapped, model, filename="dqn_eval.mp4", max_steps=6000, walls=eval_walls)
     
     elif algo == "her":
         # -----------------------------------------------
@@ -324,7 +380,7 @@ if __name__ == "__main__":
         # -----------------------------------------------
         max_steps = 500
 
-        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot")
+        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirty_ratio=dirty_ratio)
         base_env = TimeLimit(base_env, max_episode_steps=max_steps)
         base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
         base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
@@ -334,7 +390,7 @@ if __name__ == "__main__":
         monitored_env = MetricWrapper(goal_env)
 
         # Eval env (same setup)
-        eval_base = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot")
+        eval_base = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirty_ratio=dirty_ratio)
         eval_base = TimeLimit(eval_base, max_episode_steps=max_steps)
         eval_base = ExplorationBonusWrapper(eval_base, bonus=0.3)
         eval_base = ExploitationPenaltyWrapper(eval_base, time_penalty=-0.002, stay_penalty=-0.1)
@@ -342,7 +398,7 @@ if __name__ == "__main__":
 
         # Set fixed wall layout
         obs, _ = goal_env.reset(options={"walls": walls})
-        obs, _ = eval_env.reset(options={"walls": walls})
+        obs, _ = eval_env.reset(options={"walls": eval_walls})
         check_env(monitored_env, warn=True)
         check_env(eval_env, warn=True)
 
@@ -372,8 +428,8 @@ if __name__ == "__main__":
 
         # Save training run video
         print("Saving final training trajectory...")
-        rollout_and_record(monitored_env.unwrapped, model, filename="her_train.mp4", max_steps=3000)
+        rollout_and_record(monitored_env.unwrapped, model, filename="her_train.mp4", max_steps=3000, walls=walls)
 
         # Save evaluation run video
         print("Saving evaluation trajectory...")
-        rollout_and_record(eval_env.unwrapped, model, filename="dqn_her_eval.mp4", max_steps=3000)
+        rollout_and_record(eval_env.unwrapped, model, filename="dqn_her_eval.mp4", max_steps=3000, walls=eval_walls)

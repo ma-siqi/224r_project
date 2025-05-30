@@ -28,6 +28,8 @@ class ExplorationBonusWrapper(gym.Wrapper):
         if self.visit_map[pos] < 1e-3:
             reward += self.bonus
 
+        reward += max(0, self.bonus * (0.3 - self.visit_map[pos]))
+
         self.visit_map[pos] += 1
         return obs, reward, terminated, truncated, info
 
@@ -75,7 +77,7 @@ class ExploitationPenaltyWrapper(gym.Wrapper):
         curr_pos = list(self.env.unwrapped.agent_pos)
         if self.prev_pos == curr_pos:
             self.stay_counter += 1
-            reward += self.stay_penalty
+            reward += self.stay_penalty * self.stay_counter  # increase over time
         else:
             self.stay_counter = 0
         self.prev_pos = curr_pos

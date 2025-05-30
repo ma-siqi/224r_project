@@ -51,8 +51,10 @@ python run.py --algo ppo --grid_size 40 30 --wall_mode hardcoded
 
 Command-line arguments:
 - `--algo`: Choose `"ppo"` or `"dqn"` (default: `ppo`)
+- `--timesteps`: Number of training timesteps (default: 500,000)
 - `--grid_size`: Specify the environment size (e.g., `--grid_size 40 30`)
 - `--wall_mode`: Either `"random"` or `"hardcoded"` (only applies to 40x30 grid)
+- `--dirt_ratio`: Specify the dirt ratio (default: 0.9)
 
 ### Rainbow DQN Implementation
 We also provide a custom Rainbow DQN implementation in `rainbow_dqn.py` with the following features:

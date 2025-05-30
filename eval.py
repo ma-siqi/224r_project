@@ -128,7 +128,7 @@ class MetricWrapper(gym.Wrapper):
         super().__init__(env)
         self.metrics = {}
         self.env = env
-        self.base_env = env.base_env # env.unwrapped
+        self.base_env = env.unwrapped # env.unwrapped
 
     def reset(self, **kwargs):
         self.metrics = {}

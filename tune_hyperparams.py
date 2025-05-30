@@ -26,11 +26,11 @@ register(
 # --------------------------------------
 # Make monitored, wrapped environment
 # --------------------------------------
-def make_env(grid_size=(20, 20), use_layout=False, max_steps=3000):
+def make_env(grid_size=(20, 20), use_layout=False, max_steps=3000, dirty_ratio=0.9):
     walls = generate_1b1b_layout_grid() if use_layout else None
 
     def _env():
-        env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="human")
+        env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="human", dirty_ratio=dirty_ratio)
         env = TimeLimit(env, max_episode_steps=max_steps)
         env = ExplorationBonusWrapper(env, bonus=0.3)
         env = ExploitationPenaltyWrapper(env, time_penalty=-0.002, stay_penalty=-0.1)
@@ -48,6 +48,7 @@ ppo_search_space = {
     "ent_coef": (1e-4, 1e-1, "log"), # coefficient of entropy bonus: higher = more exploration, lower = more exploitation
     "n_steps": [128, 256, 512, 1024], # number of timesteps before updating policy
     "gamma": (0.90, 0.9999, "float"),
+    "clip_range": (0.1, 0.3, "float"), # how far new policies are allowed to deviate from old policies
 }
 
 dqn_search_space = {
@@ -55,6 +56,8 @@ dqn_search_space = {
     "buffer_size": [50_000, 100_000, 200_000], # size of replay buffer
     "batch_size": [32, 64, 128], # number of samples per training step
     "exploration_fraction": (0.05, 0.3, "float"), # fraction of total training steps over which exploration decreases
+    "exploration_initial_eps": (0.8, 1.0, "float"), # initial exploration probability
+    "exploration_final_eps": (0.01, 0.1, "float"), # final exploration probability
     "gamma": (0.90, 0.999, "float"),
 }
 
@@ -62,19 +65,21 @@ dqn_search_space = {
 # Objective functions
 # --------------------------------------
 def ppo_objective(trial):
-    env_fn = make_env(grid_size=(40, 30), use_layout=True)
+    env_fn = make_env(grid_size=(40, 30), use_layout=True, dirty_ratio=0.9)
     env = env_fn()
     eval_env = env_fn()
 
     lr_low, lr_high, lr_scale = ppo_search_space["learning_rate"]
     ent_low, ent_high, ent_scale = ppo_search_space["ent_coef"]
     gamma_low, gamma_high, _ = ppo_search_space["gamma"]
+    clip_low, clip_high, _ = ppo_search_space["clip_range"]
 
     params = {
         "learning_rate": trial.suggest_float("learning_rate", lr_low, lr_high, log=(lr_scale == "log")),
         "ent_coef": trial.suggest_float("ent_coef", ent_low, ent_high, log=(ent_scale == "log")),
         "n_steps": trial.suggest_categorical("n_steps", ppo_search_space["n_steps"]),
         "gamma": trial.suggest_float("gamma", gamma_low, gamma_high),
+        "clip_range": trial.suggest_float("clip_range", clip_low, clip_high),
     }
 
     model = PPO("MultiInputPolicy", env, verbose=0, **params)
@@ -83,19 +88,26 @@ def ppo_objective(trial):
     return mean_reward
 
 def dqn_objective(trial):
-    env_fn = make_env(grid_size=(40, 30), use_layout=True)
+    env_fn = make_env(grid_size=(40, 30), use_layout=True, dirty_ratio=0.9)
     env = env_fn()
     eval_env = env_fn()
 
     lr_low, lr_high, lr_scale = dqn_search_space["learning_rate"]
-    exploration_low, exploration_high, _ = dqn_search_space["exploration_fraction"]
+    exploration_frac_low, exploration_frac_high, _ = dqn_search_space["exploration_fraction"]
+    exploration_init_low, exploration_init_high, _ = dqn_search_space["exploration_initial_eps"]
+    exploration_final_low, exploration_final_high, _ = dqn_search_space["exploration_final_eps"]
     gamma_low, gamma_high, _ = dqn_search_space["gamma"]
 
     params = {
         "learning_rate": trial.suggest_float("learning_rate", lr_low, lr_high, log=(lr_scale == "log")),
         "buffer_size": trial.suggest_categorical("buffer_size", dqn_search_space["buffer_size"]),
         "batch_size": trial.suggest_categorical("batch_size", dqn_search_space["batch_size"]),
-        "exploration_fraction": trial.suggest_float("exploration_fraction", exploration_low, exploration_high),
+        "exploration_fraction": trial.suggest_float("exploration_fraction", exploration_frac_low,
+                                                    exploration_frac_high),
+        "exploration_initial_eps": trial.suggest_float("exploration_initial_eps", exploration_init_low,
+                                                       exploration_init_high),
+        "exploration_final_eps": trial.suggest_float("exploration_final_eps", exploration_final_low,
+                                                     exploration_final_high),
         "gamma": trial.suggest_float("gamma", gamma_low, gamma_high),
     }
 
@@ -108,8 +120,8 @@ def dqn_objective(trial):
 # Run tuning and retrain best
 # --------------------------------------
 if __name__ == "__main__":
-    algo = "ppo"  # or "dqn"
-    n_trials = 20
+    algo = "dqn"  # or "dqn"
+    n_trials = 50
 
     print(f"Tuning {algo.upper()} with Optuna ({n_trials} trials)...")
     study = optuna.create_study(direction="maximize")
