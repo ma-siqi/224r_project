@@ -17,7 +17,7 @@ class VacuumEnv(gym.Env):
         penalty_invalid_move=-1.0,
         reward_return_home=10000.0,
         penalty_delay_return=-0.05,
-        dirty_ratio=0.9,
+        dirt_num=5,
         render_mode=None,
         use_counter=True
     ):
@@ -46,7 +46,7 @@ class VacuumEnv(gym.Env):
         } # define the 8 directions
 
         self.start_pos = [0, 0] # agent starting position is the upper-left corner
-        self.dirty_ratio = dirty_ratio # ratio of dirty tiles
+        self.dirt_num = dirt_num # ratio of dirty tiles
 
         self.rng = np.random.default_rng()  # used to generate random layouts
         self.render_mode = render_mode
@@ -70,9 +70,7 @@ class VacuumEnv(gym.Env):
 
         # generate dirt layout: only dirty_ratio non-obstacle tiles are dirty
         self.dirt_map = np.zeros(self.grid_size, dtype=np.uint8)
-        cleanable_mask = (self.obstacle_map == 0)
-        random_dirty = self.rng.random(self.grid_size) < self.dirty_ratio
-        self.dirt_map[np.logical_and(cleanable_mask, random_dirty)] = 1
+        self.generate_random_dirt_clusters(self.dirt_num)
 
         self.agent_pos = list(self.start_pos)
         self.agent_orient = 2 # agent starting orientation is facing right
@@ -135,6 +133,28 @@ class VacuumEnv(gym.Env):
         for x, y in walls:
             if 0 <= x < self.grid_size[0] and 0 <= y < self.grid_size[1]:
                 self.obstacle_map[x, y] = 1
+    
+    def generate_random_dirt_clusters(self, num_dirt):
+        """Place dirt clusters of various fixed sizes randomly on the grid"""
+        self.dirt_map[:] = 0  # Clear existing dirt
+        h, w = self.grid_size
+
+        possible_sizes = [(2, 2), (4, 4), (2, 4)]
+        attempts = 0
+        max_attempts = num_dirt * 10  # Limit attempts to prevent infinite loop
+
+        placed = 0
+        while placed < num_dirt and attempts < max_attempts:
+            dh, dw = self.rng.choice(possible_sizes)
+            top = self.rng.integers(0, h - dh + 1)
+            left = self.rng.integers(0, w - dw + 1)
+
+            # Check if the area is free of obstacles
+            if np.all(self.obstacle_map[top:top+dh, left:left+dw] == 0) and \
+            np.all(self.dirt_map[top:top+dh, left:left+dw] == 0):
+                self.dirt_map[top:top+dh, left:left+dw] += 1
+                placed += 1
+            attempts += 1
 
     def _get_obs(self):
         """Check surroundings and return observation"""

@@ -153,7 +153,6 @@ class MetricWrapper(gym.Wrapper):
     def compute_reward(self, achieved_goal, desired_goal, info):
         return self.env.compute_reward(achieved_goal, desired_goal, info)
 
-
 def evaluate_model(model, env, n_episodes=10, render=False) -> Dict[str, List[float]]:
     """
     Evaluate a trained model and return detailed metrics
@@ -200,6 +199,29 @@ def evaluate_model(model, env, n_episodes=10, render=False) -> Dict[str, List[fl
                 print("---")
 
     return metrics
+
+def save_metrics_with_summary(metrics, output_path):
+    """
+    Save both raw metrics and summary statistics to JSON file.
+    """
+    summary = {}
+    for key, values in metrics.items():
+        values_np = np.array(values, dtype=np.float32)
+        summary[key] = {
+            "mean": float(np.mean(values_np)) if len(values_np) > 0 else 0.0,
+            "std": float(np.std(values_np)) if len(values_np) > 0 else 0.0
+        }
+
+    result = {
+        "raw_metrics": metrics,
+        "summary_statistics": summary
+    }
+
+    with open(output_path, "w") as f:
+        json.dump(result, f, indent=4)
+
+    print(f"Metrics saved to {output_path}")
+
 
 class RandomAgent:
     """Simple random agent for baseline comparison"""

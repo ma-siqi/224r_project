@@ -488,7 +488,7 @@ def train(env_id: str = "Vacuum-v0", grid_size: tuple = (6, 6), total_timesteps:
     # Create environment if not provided
     if env is None:
         # Create and wrap environment with metrics and additional wrappers
-        env = gym.make(env_id, grid_size=grid_size, use_counter=False)  # Add grid_size parameter
+        env = gym.make(env_id, grid_size=grid_size, use_counter=False, dirt_num=5)  # Add grid_size parameter
         env = TimeLimit(env, max_episode_steps=500)
         env = ExplorationBonusWrapper(env, bonus=0.3)
         env = ExploitationPenaltyWrapper(env, time_penalty=-0.002, stay_penalty=-0.1)

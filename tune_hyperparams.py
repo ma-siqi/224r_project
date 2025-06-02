@@ -26,11 +26,11 @@ register(
 # --------------------------------------
 # Make monitored, wrapped environment
 # --------------------------------------
-def make_env(grid_size=(20, 20), use_layout=False, max_steps=3000, dirty_ratio=0.9):
+def make_env(grid_size=(20, 20), use_layout=False, max_steps=3000, dirt_num=5):
     walls = generate_1b1b_layout_grid() if use_layout else None
 
     def _env():
-        env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="human", dirty_ratio=dirty_ratio)
+        env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="human", dirt_num=dirt_num)
         env = TimeLimit(env, max_episode_steps=max_steps)
         env = ExplorationBonusWrapper(env, bonus=0.3)
         env = ExploitationPenaltyWrapper(env, time_penalty=-0.002, stay_penalty=-0.1)
@@ -65,7 +65,7 @@ dqn_search_space = {
 # Objective functions
 # --------------------------------------
 def ppo_objective(trial):
-    env_fn = make_env(grid_size=(40, 30), use_layout=True, dirty_ratio=0.9)
+    env_fn = make_env(grid_size=(20, 20), use_layout=True, dirt_num=5)
     env = env_fn()
     eval_env = env_fn()
 
@@ -88,7 +88,7 @@ def ppo_objective(trial):
     return mean_reward
 
 def dqn_objective(trial):
-    env_fn = make_env(grid_size=(40, 30), use_layout=True, dirty_ratio=0.9)
+    env_fn = make_env(grid_size=(40, 30), use_layout=True, dirt_num=5)
     env = env_fn()
     eval_env = env_fn()
 
@@ -134,7 +134,7 @@ if __name__ == "__main__":
     print("\nBest Trial:")
     print(study.best_trial)
 
-    save_dir = "optuna_results"
+    save_dir = "optuna_results/dirt_num_5"
     os.makedirs(save_dir, exist_ok=True)
 
     best_param_path = os.path.join(save_dir, f"{algo}_best_params.json")

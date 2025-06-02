@@ -2,12 +2,14 @@ import gymnasium as gym
 from gymnasium.envs.registration import register
 from gymnasium.wrappers import TimeLimit
 from gymnasium import spaces
+import os
 
 from env import VacuumEnv
 from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper
 from her import VacuumGoalWrapper, HerReplayBufferForDQN
 from eval import MetricWrapper, MetricCallback, evaluate_random_agent_steps, RandomAgent
 from eval import export_random_metrics
+from eval import evaluate_model, save_metrics_with_summary
 
 import numpy as np
 import json
@@ -213,6 +215,31 @@ def rollout_and_record(env, model, filename="vacuum_run.mp4", max_steps=100, wal
     plt.close(fig)
     print(f"Video saved to {filename}")
 
+def rollout_and_save_last_frame(env, model, filename="last_frame.png", max_steps=100, walls=None, dir_name = "logs"):
+    obs, _ = env.reset(options={"walls": walls})
+    last_frame = None
+
+    for _ in range(max_steps):
+        last_frame = env.render_frame()  # Only keep the latest frame
+
+        try:
+            action, _ = model.predict(obs)
+        except:
+            action, _ = model.predict(obs, deterministic=True)
+        obs, _, terminated, truncated, _ = env.step(action)
+
+        if terminated or truncated:
+            break
+    
+    os.makedirs(os.path.dirname(dir_name), exist_ok=True)
+
+    plt.figure()
+    plt.imshow(last_frame)
+    plt.axis("off")
+    plt.savefig(os.path.join(dir_name, filename), bbox_inches="tight", pad_inches=0)
+    plt.close()
+    print(f"Last frame saved to {filename}")
+
 
 if __name__ == "__main__":
     # ------------------------------
@@ -225,15 +252,15 @@ if __name__ == "__main__":
                         help="Grid size as two integers (e.g., 40 30)")
     parser.add_argument("--wall_mode", choices=["random", "hardcoded"], default="random",
                         help="Wall layout: 'random' or 'hardcoded' (only applies to 40x30)")
-    parser.add_argument("--dirty_ratio", type=float, default=0.9,
-                        help="Proportion of non-obstacle tiles that start dirty (0.0–1.0)")
+    parser.add_argument("--dirt_num", type=float, default=5,
+                        help="Number of dirt clusters")
     args = parser.parse_args()
 
     algo = args.algo
     total_timesteps = args.timesteps
     grid_size = tuple(args.grid_size)
     wall_mode = args.wall_mode
-    dirty_ratio = args.dirty_ratio
+    dirt_num = args.dirt_num
 
     # Determine wall layout for training and eval
     if wall_mode == "hardcoded" and grid_size == (40, 30):
@@ -244,7 +271,7 @@ if __name__ == "__main__":
         eval_walls = None
 
     # Load best hyperparameters if available
-    param_path = Path(f"optuna_results/{algo}_best_params.json")
+    param_path = Path(f"optuna_results/dirt_num_5/{algo}_best_params.json")
     if param_path.exists():
         with open(param_path, "r") as f:
             best_params = json.load(f)
@@ -256,7 +283,7 @@ if __name__ == "__main__":
         # Random baseline
         # ---------------
         max_steps = 3000
-        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirty_ratio=dirty_ratio)
+        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirt_num=dirt_num)
         base_env = TimeLimit(base_env, max_episode_steps=max_steps)
         base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
         base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
@@ -282,7 +309,7 @@ if __name__ == "__main__":
         # --------------------------------------
         max_steps = 3000
 
-        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirty_ratio=dirty_ratio)
+        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirt_num=dirt_num)
         base_env = TimeLimit(base_env, max_episode_steps=max_steps)
         base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
         base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
@@ -292,7 +319,7 @@ if __name__ == "__main__":
         monitored_env = Monitor(base_env)
 
         # evaluation environment
-        eval_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirty_ratio=dirty_ratio)
+        eval_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirt_num=dirt_num)
         eval_env = TimeLimit(eval_env, max_episode_steps=max_steps)
         eval_env = ExplorationBonusWrapper(eval_env, bonus=0.3)
         eval_env = ExploitationPenaltyWrapper(eval_env, time_penalty=-0.002, stay_penalty=-0.1)
@@ -301,8 +328,8 @@ if __name__ == "__main__":
         eval_env = Monitor(eval_env)
 
         # reset before training
-        obs, _ = monitored_env.reset(options={"walls": walls})
-        obs, _ = eval_env.reset(options={"walls": eval_walls})
+        obs, _ = monitored_env.reset(options={"walls": walls}, seed=42)
+        obs, _ = eval_env.reset(options={"walls": eval_walls}, seed=42)
         check_env(monitored_env, warn=True)
         check_env(eval_env, warn=True)
 
@@ -322,11 +349,16 @@ if __name__ == "__main__":
 
         # Save the final trajectory
         print("Saving PPO training trajectory...")
-        rollout_and_record(monitored_env.unwrapped, model, filename="ppo_train.mp4", max_steps=3000, walls=walls)
+        rollout_and_save_last_frame(monitored_env.unwrapped, model, filename="ppo_train.png", max_steps=3000, walls=walls, dir_name="./logs/ppo")
 
         # Save best eval trajectory
         print("Saving PPO eval trajectory...")
-        rollout_and_record(eval_env.unwrapped, model, filename="ppo_eval.mp4", max_steps=3000, walls=eval_walls)
+        rollout_and_save_last_frame(eval_env.unwrapped, model, filename="ppo_eval.png", max_steps=3000, walls=eval_walls, dir_name = "./logs/ppo")
+
+        # Save to file with summary
+        metrics = evaluate_model(model, eval_env, n_episodes=20)
+        save_metrics_with_summary(metrics, output_path="./logs/ppo/evaluation_metrics.json")
+
 
     elif algo == "dqn":
         # --------------------------------------
@@ -334,7 +366,7 @@ if __name__ == "__main__":
         # --------------------------------------
         max_steps = 3000
 
-        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirty_ratio=dirty_ratio)
+        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirt_num=dirt_num)
         base_env = TimeLimit(base_env, max_episode_steps=max_steps)
         base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
         base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
@@ -342,7 +374,7 @@ if __name__ == "__main__":
         base_env = MetricWrapper(base_env)
         monitored_env = Monitor(base_env)
 
-        eval_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirty_ratio=dirty_ratio)
+        eval_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirt_num=dirt_num)
         eval_env = TimeLimit(eval_env, max_episode_steps=max_steps)
         eval_env = ExplorationBonusWrapper(eval_env, bonus=0.3)
         eval_env = ExploitationPenaltyWrapper(eval_env, time_penalty=-0.002, stay_penalty=-0.1)
@@ -369,10 +401,14 @@ if __name__ == "__main__":
         )
 
         print("Saving DQN training trajectory...")
-        rollout_and_record(monitored_env.unwrapped, model, filename="dqn_train.mp4", max_steps=6000, walls=walls)
+        rollout_and_save_last_frame(monitored_env.unwrapped, model, filename="dqn_train.png", max_steps=6000, walls=walls, dir_name="./logs/dqn")
 
         print("Saving DQN eval trajectory...")
-        rollout_and_record(eval_env.unwrapped, model, filename="dqn_eval.mp4", max_steps=6000, walls=eval_walls)
+        rollout_and_save_last_frame(eval_env.unwrapped, model, filename="dqn_eval.png", max_steps=6000, walls=eval_walls, dir_name="./logs/dqn")
+
+        # Save to file with summary
+        metrics = evaluate_model(model, eval_env, n_episodes=20)
+        save_metrics_with_summary(metrics, output_path="./logs/dqn/evaluation_metrics.json")
     
     elif algo == "her":
         # -----------------------------------------------
@@ -380,7 +416,7 @@ if __name__ == "__main__":
         # -----------------------------------------------
         max_steps = 500
 
-        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirty_ratio=dirty_ratio)
+        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirt_num=dirt_num)
         base_env = TimeLimit(base_env, max_episode_steps=max_steps)
         base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
         base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
@@ -390,7 +426,7 @@ if __name__ == "__main__":
         monitored_env = MetricWrapper(goal_env)
 
         # Eval env (same setup)
-        eval_base = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirty_ratio=dirty_ratio)
+        eval_base = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirt_num=dirt_num)
         eval_base = TimeLimit(eval_base, max_episode_steps=max_steps)
         eval_base = ExplorationBonusWrapper(eval_base, bonus=0.3)
         eval_base = ExploitationPenaltyWrapper(eval_base, time_penalty=-0.002, stay_penalty=-0.1)
