@@ -283,12 +283,38 @@ def project_distribution(next_dist, rewards, dones, support, delta_z, gamma):
     l = b.floor().long()
     u = b.ceil().long()
     
+    # proj_dist = torch.zeros_like(next_dist)
+    
+    # for i in range(batch_size):
+    #     for j in range(atoms):
+    #         proj_dist[i][l[i][j]] += next_dist[i][j] * (u[i][j] - b[i][j])
+    #         proj_dist[i][u[i][j]] += next_dist[i][j] * (b[i][j] - l[i][j])
+
+
+    # Clamp indices to valid range [0, atoms-1] - essential for GPU/CPU consistency
+    l = l.clamp(0, atoms - 1)
+    u = u.clamp(0, atoms - 1)
+    
     proj_dist = torch.zeros_like(next_dist)
     
-    for i in range(batch_size):
-        for j in range(atoms):
-            proj_dist[i][l[i][j]] += next_dist[i][j] * (u[i][j] - b[i][j])
-            proj_dist[i][u[i][j]] += next_dist[i][j] * (b[i][j] - l[i][j])
+    # Vectorized version - much faster than nested loops
+    # Create index tensors for scatter operations
+    batch_indices = torch.arange(batch_size, device=next_dist.device).unsqueeze(1).expand(-1, atoms)
+    
+    # Flatten for scatter operations
+    batch_flat = batch_indices.flatten()
+    l_flat = l.flatten()
+    u_flat = u.flatten()
+    next_dist_flat = next_dist.flatten()
+    b_flat = b.flatten()
+    
+    # Calculate weights
+    l_weight = (u_flat - b_flat) * next_dist_flat
+    u_weight = (b_flat - l_flat) * next_dist_flat
+    
+    # Use scatter_add for vectorized accumulation
+    proj_dist.view(-1).scatter_add_(0, batch_flat * atoms + l_flat, l_weight)
+    proj_dist.view(-1).scatter_add_(0, batch_flat * atoms + u_flat, u_weight)
             
     return proj_dist
 
