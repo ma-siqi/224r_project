@@ -9,7 +9,7 @@ import gymnasium as gym
 from gymnasium.wrappers import TimeLimit
 from gymnasium.wrappers import RecordEpisodeStatistics
 from env import VacuumEnv
-from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper
+from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper, MetricWrapper
 from run import generate_1b1b_layout_grid
 
 # Base directory for all Optuna studies
@@ -37,11 +37,12 @@ def make_env(grid_size=(40, 30), use_layout=True, max_steps=3000, dirty_ratio=0.
         env = gym.make("Vacuum-v0", 
                       grid_size=grid_size, 
                       render_mode="plot",
-                      dirty_ratio=dirty_ratio)
+                      dirty_ratio=dirty_ratio,
+                      use_counter=False)  # Disable internal counter since we use wrappers
         env = TimeLimit(env, max_episode_steps=max_steps)
         env = ExplorationBonusWrapper(env, bonus=0.3)  # Will be overridden by trial params
         env = ExploitationPenaltyWrapper(env, time_penalty=-0.002, stay_penalty=-0.1)  # Will be overridden
-        env = RecordEpisodeStatistics(env)
+        env = MetricWrapper(env)  # Add metrics wrapper for proper evaluation
         if walls is not None:
             env.reset(options={"walls": walls})
         return env
@@ -90,30 +91,31 @@ def objective(trial):
         rdqn.BETA = params['beta']
         rdqn.BETA_INCREMENT = params['beta_increment']
         
-        # Create training and evaluation environments
-        grid_size = (40, 30)  # Match tune_hyperparams.py
-        total_timesteps = 100000  # Match tune_hyperparams.py
-        eval_episodes = 5  # Match tune_hyperparams.py
+        # Environment parameters
+        grid_size = (40, 30)
+        total_timesteps = 100000
+        eval_episodes = 5
+        max_steps = 3000
+        dirty_ratio = 0.9
+        use_layout = True
         
+        # Create environment factory with consistent settings
         env_fn = make_env(
             grid_size=grid_size,
-            use_layout=True,
-            max_steps=3000,  # Match tune_hyperparams.py
-            dirty_ratio=0.9
+            use_layout=use_layout,
+            max_steps=max_steps,
+            dirty_ratio=dirty_ratio
         )
         
-        # Create training and eval environments
+        # Create training and eval environments from the same factory
         train_env = env_fn()
-        eval_env = env_fn()  # Separate env for evaluation
+        eval_env = env_fn()  # This ensures same layout and settings
         
         # Update environment wrappers with trial-specific parameters
-        train_env.env.exploration_bonus = params['exploration_bonus']  # type: ignore
-        train_env.env.time_penalty = params['time_penalty']  # type: ignore
-        train_env.env.stay_penalty = params['stay_penalty']  # type: ignore
-        
-        eval_env.env.exploration_bonus = params['exploration_bonus']  # type: ignore
-        eval_env.env.time_penalty = params['time_penalty']  # type: ignore
-        eval_env.env.stay_penalty = params['stay_penalty']  # type: ignore
+        for env in [train_env, eval_env]:
+            env.env.exploration_bonus = params['exploration_bonus']  # type: ignore
+            env.env.time_penalty = params['time_penalty']  # type: ignore
+            env.env.stay_penalty = params['stay_penalty']  # type: ignore
         
         # Create training directory
         train_dir = os.path.join(trial_dir, 'training')
@@ -143,21 +145,21 @@ def objective(trial):
             custom_log_dir=eval_dir  # Use trial-specific directory
         )
         
-        # Calculate objective metric (you can modify this)
-        avg_reward = np.mean(metrics['episode_rewards'])
-        avg_coverage = np.mean(metrics['coverage_ratio'])
-        avg_efficiency = np.mean(metrics['path_efficiency'])
+        # Calculate mean reward as the objective
+        mean_reward = np.mean(metrics['episode_rewards'])
         
-        # Combine metrics into a single objective value
-        objective_value = avg_reward * avg_coverage * avg_efficiency
-        
-        # Save trial results
+        # Save all metrics for analysis, but only use mean reward for optimization
         results = {
-            'avg_reward': float(avg_reward),
-            'avg_coverage': float(avg_coverage),
-            'avg_efficiency': float(avg_efficiency),
-            'objective_value': float(objective_value)
+            'mean_reward': float(mean_reward),
+            'metrics': {
+                'episode_rewards': metrics['episode_rewards'],
+                'episode_lengths': metrics['episode_lengths'],
+                'coverage_ratio': metrics['coverage_ratio'],
+                'path_efficiency': metrics['path_efficiency'],
+                'revisit_ratio': metrics['revisit_ratio']
+            }
         }
+        
         with open(os.path.join(trial_dir, 'results.json'), 'w') as f:
             json.dump(results, f, indent=4)
         
@@ -165,7 +167,7 @@ def objective(trial):
         train_env.close()
         eval_env.close()
         
-        return objective_value
+        return mean_reward  # Only return mean reward as the objective
         
     except Exception as e:
         print(f"Trial {trial.number} failed with error: {str(e)}")
@@ -191,7 +193,7 @@ def main():
         sampler=optuna.samplers.TPESampler(seed=42)
     )
     
-    n_trials = 50  # Adjust based on your computational resources
+    n_trials = 20  # Adjust based on your computational resources
     study.optimize(objective, n_trials=n_trials)
     
     # Print best trial information
