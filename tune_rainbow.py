@@ -7,14 +7,19 @@ import json
 from datetime import datetime
 import gymnasium as gym
 from gymnasium.wrappers import TimeLimit
+from gymnasium.wrappers import RecordEpisodeStatistics
 from env import VacuumEnv
 from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper
 from run import generate_1b1b_layout_grid
 
+# Base directory for all Optuna studies
+OPTUNA_STUDIES_DIR = os.path.join('logs', 'optuna_studies')
+os.makedirs(OPTUNA_STUDIES_DIR, exist_ok=True)
+
 # Register the environment
 gym.register(id="Vacuum-v0", entry_point="env:VacuumEnv")
 
-def make_env(grid_size=(6, 6), use_layout=False, max_steps=3000, dirty_ratio=0.8):
+def make_env(grid_size=(40, 30), use_layout=True, max_steps=3000, dirty_ratio=0.9):
     """Create a wrapped vacuum environment with specified parameters.
     
     Args:
@@ -36,6 +41,7 @@ def make_env(grid_size=(6, 6), use_layout=False, max_steps=3000, dirty_ratio=0.8
         env = TimeLimit(env, max_episode_steps=max_steps)
         env = ExplorationBonusWrapper(env, bonus=0.3)  # Will be overridden by trial params
         env = ExploitationPenaltyWrapper(env, time_penalty=-0.002, stay_penalty=-0.1)  # Will be overridden
+        env = RecordEpisodeStatistics(env)
         if walls is not None:
             env.reset(options={"walls": walls})
         return env
@@ -43,6 +49,12 @@ def make_env(grid_size=(6, 6), use_layout=False, max_steps=3000, dirty_ratio=0.8
     return _env
 
 def objective(trial):
+    # Create study directory for this trial
+    study_name = trial.study.study_name
+    study_dir = os.path.join(OPTUNA_STUDIES_DIR, study_name)
+    trial_dir = os.path.join(study_dir, f'trial_{trial.number}')
+    os.makedirs(trial_dir, exist_ok=True)
+    
     # Hyperparameters to tune
     params = {
         'lr': trial.suggest_float('lr', 1e-5, 1e-3, log=True),
@@ -60,12 +72,8 @@ def objective(trial):
         'stay_penalty': trial.suggest_float('stay_penalty', -0.2, -0.05)
     }
     
-    # Create study directory
-    study_dir = os.path.join('logs', 'optuna_studies', f'trial_{trial.number}')
-    os.makedirs(study_dir, exist_ok=True)
-    
     # Save hyperparameters
-    with open(os.path.join(study_dir, 'hyperparameters.json'), 'w') as f:
+    with open(os.path.join(trial_dir, 'hyperparameters.json'), 'w') as f:
         json.dump(params, f, indent=4)
     
     try:
@@ -83,14 +91,14 @@ def objective(trial):
         rdqn.BETA_INCREMENT = params['beta_increment']
         
         # Create training and evaluation environments
-        grid_size = (40, 30)  # Can be adjusted
-        total_timesteps = 100000  # Reduced for faster trials
-        eval_episodes = 3  # Reduced for faster trials
+        grid_size = (40, 30)  # Match tune_hyperparams.py
+        total_timesteps = 100000  # Match tune_hyperparams.py
+        eval_episodes = 5  # Match tune_hyperparams.py
         
         env_fn = make_env(
             grid_size=grid_size,
             use_layout=True,
-            max_steps=500,
+            max_steps=3000,  # Match tune_hyperparams.py
             dirty_ratio=0.9
         )
         
@@ -107,22 +115,32 @@ def objective(trial):
         eval_env.env.time_penalty = params['time_penalty']  # type: ignore
         eval_env.env.stay_penalty = params['stay_penalty']  # type: ignore
         
-        # Train the model
+        # Create training directory
+        train_dir = os.path.join(trial_dir, 'training')
+        os.makedirs(train_dir, exist_ok=True)
+        
+        # Train the model with custom log directory
         model = train(
             env=train_env,
             grid_size=grid_size,
             total_timesteps=total_timesteps,
             save_freq=total_timesteps,  # Only save at the end
-            from_scratch=True  # Always start fresh
+            from_scratch=True,  # Always start fresh
+            custom_log_dir=train_dir  # Use trial-specific directory
         )
         
-        # Evaluate the model
+        # Create evaluation directory
+        eval_dir = os.path.join(trial_dir, 'evaluation')
+        os.makedirs(eval_dir, exist_ok=True)
+        
+        # Evaluate the model with custom log directory
         metrics = evaluate(
             model,
-            env=eval_env,  # Pass the evaluation environment
+            env=eval_env,
             grid_size=grid_size,
             episodes=eval_episodes,
-            render=False  # No need to render during tuning
+            render=False,  # No need to render during tuning
+            custom_log_dir=eval_dir  # Use trial-specific directory
         )
         
         # Calculate objective metric (you can modify this)
@@ -140,7 +158,7 @@ def objective(trial):
             'avg_efficiency': float(avg_efficiency),
             'objective_value': float(objective_value)
         }
-        with open(os.path.join(study_dir, 'results.json'), 'w') as f:
+        with open(os.path.join(trial_dir, 'results.json'), 'w') as f:
             json.dump(results, f, indent=4)
         
         # Clean up environments
@@ -151,12 +169,19 @@ def objective(trial):
         
     except Exception as e:
         print(f"Trial {trial.number} failed with error: {str(e)}")
+        import traceback
+        traceback.print_exc()  # Print the full traceback for debugging
         return float('-inf')  # Return worst possible value on failure
 
 def main():
     # Create study name with timestamp
-    study_name = f"rainbow_dqn_study_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    storage_name = f"sqlite:///{study_name}.db"
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    study_name = f"rainbow_dqn_study_{timestamp}"
+    study_dir = os.path.join(OPTUNA_STUDIES_DIR, study_name)
+    os.makedirs(study_dir, exist_ok=True)
+    
+    # Create database in the study directory
+    storage_name = f"sqlite:///{os.path.join(study_dir, 'study.db')}"
     
     # Create and run study
     study = optuna.create_study(
@@ -177,7 +202,7 @@ def main():
     for key, value in trial.params.items():
         print(f"  {key}: {value}")
     
-    # Save study results
+    # Save study results in the study directory
     study_results = {
         'best_value': trial.value,
         'best_params': trial.params,
@@ -191,22 +216,22 @@ def main():
         ]
     }
     
-    with open(f'{study_name}_results.json', 'w') as f:
+    with open(os.path.join(study_dir, 'study_results.json'), 'w') as f:
         json.dump(study_results, f, indent=4)
     
-    # Create visualization plots
+    # Create visualization plots in the study directory
     try:
         # Plot optimization history
         fig1 = optuna.visualization.plot_optimization_history(study)
-        fig1.write_html(f'{study_name}_optimization_history.html')
+        fig1.write_html(os.path.join(study_dir, 'optimization_history.html'))
         
         # Plot parameter importances
         fig2 = optuna.visualization.plot_param_importances(study)
-        fig2.write_html(f'{study_name}_param_importances.html')
+        fig2.write_html(os.path.join(study_dir, 'param_importances.html'))
         
         # Plot parallel coordinate
         fig3 = optuna.visualization.plot_parallel_coordinate(study)
-        fig3.write_html(f'{study_name}_parallel_coordinate.html')
+        fig3.write_html(os.path.join(study_dir, 'parallel_coordinate.html'))
     except Exception as e:
         print(f"Warning: Could not create some visualizations: {str(e)}")
 

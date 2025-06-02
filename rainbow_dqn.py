@@ -429,14 +429,24 @@ def load_model(model, filename):
         print(f"\nNo saved model found at: {load_path}")
         return None
 
-def get_log_dir(grid_size):
-    """Create and return log directory based on grid size"""
-    log_dir = os.path.join(BASE_LOG_DIR, f"rainbow_dqn_{grid_size[0]}x{grid_size[1]}")
+def get_log_dir(grid_size, custom_dir=None):
+    """Create and return log directory based on grid size or custom directory.
+    
+    Args:
+        grid_size (tuple): Grid dimensions
+        custom_dir (str, optional): Custom directory path to use instead of default
+    """
+    if custom_dir is not None:
+        log_dir = custom_dir
+    else:
+        log_dir = os.path.join(BASE_LOG_DIR, f"rainbow_dqn_{grid_size[0]}x{grid_size[1]}")
+    
     os.makedirs(log_dir, exist_ok=True)
     return log_dir
 
-def train(env_id: str = "Vacuum-v0", grid_size: tuple = (6, 6), total_timesteps: int = 50000, save_freq: int = 10000, walls=None, from_scratch=False):
-    LOG_DIR = get_log_dir(grid_size)
+def train(env_id: str = "Vacuum-v0", grid_size: tuple = (6, 6), total_timesteps: int = 50000, save_freq: int = 10000, walls=None, from_scratch=False, env=None, custom_log_dir=None):
+    global LOG_DIR  # Make LOG_DIR accessible globally
+    LOG_DIR = get_log_dir(grid_size, custom_dir=custom_log_dir)
     
     print_section_header("Starting Training")
     print(f"Environment: {env_id}")
@@ -449,12 +459,14 @@ def train(env_id: str = "Vacuum-v0", grid_size: tuple = (6, 6), total_timesteps:
     writer = SummaryWriter(os.path.join(LOG_DIR, 'tensorboard'))
     print(f"TensorBoard logs will be saved to: {os.path.join(LOG_DIR, 'tensorboard')}")
     
-    # Create and wrap environment with metrics and additional wrappers
-    env = gym.make(env_id, grid_size=grid_size, use_counter=False)  # Add grid_size parameter
-    env = TimeLimit(env, max_episode_steps=500)
-    env = ExplorationBonusWrapper(env, bonus=0.3)
-    env = ExploitationPenaltyWrapper(env, time_penalty=-0.002, stay_penalty=-0.1)
-    env = MetricWrapper(env)
+    # Create environment if not provided
+    if env is None:
+        # Create and wrap environment with metrics and additional wrappers
+        env = gym.make(env_id, grid_size=grid_size, use_counter=False)  # Add grid_size parameter
+        env = TimeLimit(env, max_episode_steps=500)
+        env = ExplorationBonusWrapper(env, bonus=0.3)
+        env = ExploitationPenaltyWrapper(env, time_penalty=-0.002, stay_penalty=-0.1)
+        env = MetricWrapper(env)
     
     print("\nEnvironment Wrappers:")
     print("- TimeLimit: 500 steps")
@@ -652,8 +664,9 @@ def train(env_id: str = "Vacuum-v0", grid_size: tuple = (6, 6), total_timesteps:
     env.close()
     return policy_net
 
-def evaluate(policy_net, env_id="Vacuum-v0", grid_size=(6, 6), episodes=5, render=True, walls=None):
-    LOG_DIR = get_log_dir(grid_size)
+def evaluate(policy_net, env_id="Vacuum-v0", grid_size=(6, 6), episodes=5, render=True, walls=None, env=None, custom_log_dir=None):
+    global LOG_DIR  # Make LOG_DIR accessible globally
+    LOG_DIR = get_log_dir(grid_size, custom_dir=custom_log_dir)
     
     print_section_header("Starting Evaluation")
     print(f"Environment: {env_id}")
@@ -664,12 +677,14 @@ def evaluate(policy_net, env_id="Vacuum-v0", grid_size=(6, 6), episodes=5, rende
     print(f"Device: {next(policy_net.parameters()).device}")
     print(f"Training mode before eval(): {policy_net.training}")
     
-    # Create and wrap environment with same wrappers as training
-    env = gym.make(env_id, grid_size=grid_size, render_mode="plot", use_counter=False)
-    env = TimeLimit(env, max_episode_steps=500)
-    env = ExplorationBonusWrapper(env, bonus=0.3)
-    env = ExploitationPenaltyWrapper(env, time_penalty=-0.002, stay_penalty=-0.1)
-    env = MetricWrapper(env)
+    # Create environment if not provided
+    if env is None:
+        # Create and wrap environment with same wrappers as training
+        env = gym.make(env_id, grid_size=grid_size, render_mode="plot", use_counter=False)
+        env = TimeLimit(env, max_episode_steps=500)
+        env = ExplorationBonusWrapper(env, bonus=0.3)
+        env = ExploitationPenaltyWrapper(env, time_penalty=-0.002, stay_penalty=-0.1)
+        env = MetricWrapper(env)
     
     print("\nEnvironment Wrappers:")
     print("- TimeLimit: 500 steps")

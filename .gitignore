@@ -7,3 +7,5 @@ __pycache__
 model_step_*.pth
 final_model.pth
 latest_model.pth
+logs/optuna_studies/rainbow_dqn_study_*/trial_*/
+logs/optuna_studies/rainbow_dqn_study_*/study.db
