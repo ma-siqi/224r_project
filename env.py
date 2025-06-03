@@ -76,10 +76,12 @@ class VacuumEnv(gym.Env):
         self.obstacle_map = np.zeros(self.grid_size, dtype=np.uint8)
         walls = options.get("walls") if options else None
         if walls is None:
-            # Default behavior: generate random rooms
-            self.generate_random_rooms()
+            pass
+            #self.generate_random_rooms()
         elif isinstance(walls, list) and len(walls) > 0:
             self.add_wall(walls)
+        else:
+            self.generate_random_rooms()
 
         # generate dirt layout: only dirty_ratio non-obstacle tiles are dirty
         self.dirt_map = np.zeros(self.grid_size, dtype=np.uint8)
