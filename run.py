@@ -195,7 +195,7 @@ def rollout_and_record(env, model, filename="vacuum_run.mp4", max_steps=100, wal
         obs = FlattenObservation(env).observation(obs)
 
     for _ in range(max_steps):
-        fig = env.render_frame()
+        fig = env.unwrapped.render_frame()
         frames.append(fig)
 
         try:
@@ -279,7 +279,7 @@ if __name__ == "__main__":
     if wall_mode == "hardcoded" and grid_size == (40, 30):
         walls = generate_1b1b_layout_grid()
         eval_walls = generate_eval_layout_grid()
-    elif wall_mode == "none":
+    elif wall_mode == "random":
         walls = []
         eval_walls = []
     else:
@@ -368,12 +368,12 @@ if __name__ == "__main__":
 
         # Save the final trajectory
         print("Saving PPO training trajectory...")
-        rollout_and_save_last_frame(base_env, model, filename="ppo_train.png", max_steps=100, walls=walls, dir_name="./logs/ppo", algo='ppo')
+        rollout_and_save_last_frame(base_env, model, filename="ppo_train.png", max_steps=3000, walls=walls, dir_name="./logs/ppo", algo='ppo')
 
         # Save best eval trajectory
         print("Saving PPO eval trajectory...")
-        rollout_and_save_last_frame(eval_base_env, model, filename="ppo_eval.png", max_steps=100, walls=eval_walls, dir_name = "./logs/ppo", algo='ppo')
-        #rollout_and_record(eval_env.unwrapped, model, filename="ppo_eval.mp4", max_steps=3000, walls=eval_walls)
+        rollout_and_save_last_frame(eval_base_env, model, filename="ppo_eval.png", max_steps=3000, walls=eval_walls, dir_name = "./logs/ppo", algo='ppo')
+        #rollout_and_record(eval_env, model, filename="ppo_eval.mp4", max_steps=3000, walls=eval_walls)
 
         # Save to file with summary
         metrics = evaluate_vec_model(model, eval_env, n_episodes=20)
@@ -427,8 +427,8 @@ if __name__ == "__main__":
 
         # Save best eval trajectory
         print("Saving DQN eval trajectory...")
-        rollout_and_save_last_frame(eval_base_env, model, filename="dqn_train.png", max_steps=3000, walls=eval_walls, dir_name = "./logs/dqn", algo='dqn')
-        #rollout_and_record(eval_env.unwrapped, model, filename="ppo_eval.mp4", max_steps=3000, walls=eval_walls)
+        rollout_and_save_last_frame(eval_base_env, model, filename="dqn_eval.png", max_steps=3000, walls=eval_walls, dir_name = "./logs/dqn", algo='dqn')
+        #rollout_and_record(eval_env, model, filename="ppo_eval.mp4", max_steps=3000, walls=eval_walls)
 
         # Save to file with summary
         metrics = evaluate_vec_model(model, eval_env, n_episodes=20)
