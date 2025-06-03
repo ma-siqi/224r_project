@@ -9,8 +9,9 @@ import gymnasium as gym
 from gymnasium.wrappers import TimeLimit
 from gymnasium.wrappers import RecordEpisodeStatistics
 from env import VacuumEnv
-from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper, MetricWrapper
+from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper
 from run import generate_1b1b_layout_grid
+from eval import MetricWrapper
 
 # Base directory for all Optuna studies
 OPTUNA_STUDIES_DIR = os.path.join('logs', 'optuna_studies')
@@ -19,14 +20,14 @@ os.makedirs(OPTUNA_STUDIES_DIR, exist_ok=True)
 # Register the environment
 gym.register(id="Vacuum-v0", entry_point="env:VacuumEnv")
 
-def make_env(grid_size=(40, 30), use_layout=True, max_steps=3000, dirty_ratio=0.9):
+def make_env(grid_size=(40, 30), use_layout=True, max_steps=3000, dirt_num=5):
     """Create a wrapped vacuum environment with specified parameters.
     
     Args:
         grid_size (tuple): Size of the grid (width, height)
         use_layout (bool): Whether to use predefined layout (only for 40x30)
         max_steps (int): Maximum steps per episode
-        dirty_ratio (float): Initial ratio of dirty cells
+        dirt_num (int): Number of dirt clusters to place
     
     Returns:
         callable: A function that creates and returns the wrapped environment
@@ -37,7 +38,7 @@ def make_env(grid_size=(40, 30), use_layout=True, max_steps=3000, dirty_ratio=0.
         env = gym.make("Vacuum-v0", 
                       grid_size=grid_size, 
                       render_mode="plot",
-                      dirty_ratio=dirty_ratio,
+                      dirt_num=dirt_num,
                       use_counter=False)  # Disable internal counter since we use wrappers
         env = TimeLimit(env, max_episode_steps=max_steps)
         env = ExplorationBonusWrapper(env, bonus=0.3)  # Will be overridden by trial params
@@ -96,7 +97,7 @@ def objective(trial):
         total_timesteps = 100000
         eval_episodes = 5
         max_steps = 3000
-        dirty_ratio = 0.9
+        dirt_num = 5
         use_layout = True
         
         # Create environment factory with consistent settings
@@ -104,7 +105,7 @@ def objective(trial):
             grid_size=grid_size,
             use_layout=use_layout,
             max_steps=max_steps,
-            dirty_ratio=dirty_ratio
+            dirt_num=dirt_num
         )
         
         # Create training and eval environments from the same factory

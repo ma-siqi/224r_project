@@ -68,7 +68,7 @@ class VacuumEnv(gym.Env):
         else:
             self.generate_random_rooms()
 
-        # generate dirt layout: only dirty_ratio non-obstacle tiles are dirty
+        # generate dirt layout: place dirt_num clusters on non-obstacle tiles
         self.dirt_map = np.zeros(self.grid_size, dtype=np.uint8)
         self.generate_random_dirt_clusters(self.dirt_num)
 
