@@ -9,3 +9,6 @@ final_model.pth
 latest_model.pth
 logs/optuna_studies/rainbow_dqn_study_*/trial_*/
 logs/optuna_studies/rainbow_dqn_study_*/study.db
+logs/optuna_studies/rainbow_dqn_study_*/optimization_history.html
+logs/optuna_studies/rainbow_dqn_study_*/parallel_coordinate.html
+logs/optuna_studies/rainbow_dqn_study_*/param_importances.html

@@ -30,12 +30,12 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 # Hyperparameters
 GAMMA = 0.99
 LR = 1e-4
-BATCH_SIZE = 32
-BUFFER_SIZE = int(1e5)
+BATCH_SIZE = 4096  # Now we can use larger batches with vectorized operations
+BUFFER_SIZE = int(5e5)
 START_TRAINING = 1000
 EPSILON_DECAY = 0.995
 MIN_EPSILON = 0.1
-UPDATE_TARGET_EVERY = 1000
+UPDATE_TARGET_EVERY = 2000
 N_ATOMS = 51
 V_MIN = -10
 V_MAX = 10
@@ -235,14 +235,42 @@ class PrioritizedReplayBuffer:
         if len(self.buffer) < batch_size:
             return None
 
-        probs = self.priorities[:len(self.buffer)] ** ALPHA
-        probs /= probs.sum()
+        # Get priorities and handle NaN/inf values
+        priorities = self.priorities[:len(self.buffer)]
+        
+        # Replace NaN and inf values with small positive number
+        priorities = np.where(np.isfinite(priorities), priorities, 1e-8)
+        priorities = np.maximum(priorities, 1e-8)  # Ensure all priorities are positive
+        
+        probs = priorities ** ALPHA
+        
+        # Normalize probabilities and handle edge cases
+        prob_sum = probs.sum()
+        if prob_sum <= 0 or not np.isfinite(prob_sum):
+            # Fallback to uniform sampling if probabilities are invalid
+            probs = np.ones_like(probs) / len(probs)
+        else:
+            probs /= prob_sum
+        
+        # Final safety check
+        probs = np.where(np.isfinite(probs), probs, 1.0 / len(probs))
+        probs /= probs.sum()  # Renormalize
 
         indices = np.random.choice(len(self.buffer), batch_size, p=probs)
         samples = [self.buffer[idx] for idx in indices]
 
-        weights = (len(self.buffer) * probs[indices]) ** (-beta)
-        weights /= weights.max()
+        # Calculate importance sampling weights with safety checks
+        selected_probs = probs[indices]
+        weights = (len(self.buffer) * selected_probs) ** (-beta)
+        
+        # Handle potential NaN/inf in weights
+        weights = np.where(np.isfinite(weights), weights, 1.0)
+        max_weight = weights.max()
+        if max_weight <= 0 or not np.isfinite(max_weight):
+            weights = np.ones_like(weights)
+        else:
+            weights /= max_weight
+            
         weights = torch.FloatTensor(weights).to(device)
 
         # Convert dictionary observations to tensors with consistent shapes
@@ -264,7 +292,12 @@ class PrioritizedReplayBuffer:
 
     def update_priorities(self, indices: List[int], priorities: np.ndarray):
         for idx, priority in zip(indices, priorities):
-            self.priorities[idx] = priority
+            # Ensure priority is finite and positive
+            if np.isfinite(priority) and priority > 0:
+                self.priorities[idx] = priority
+            else:
+                # Use small positive value as fallback
+                self.priorities[idx] = 1e-8
 
     def __len__(self) -> int:
         return len(self.buffer)
@@ -643,7 +676,12 @@ def train(env_id: str = "Vacuum-v0", grid_size: tuple = (6, 6), total_timesteps:
                     )
 
                 loss = -(target_q_dist * current_q_dist.log()).sum(1)
+                
+                # Convert to priorities with safety checks for NaN/inf values
                 priorities = loss.detach().cpu().numpy()
+                priorities = np.where(np.isfinite(priorities), priorities, 1e-8)
+                priorities = np.maximum(priorities, 1e-8)  # Ensure all priorities are positive
+                
                 loss = (loss * weights).mean()
                 
                 # Log training loss to TensorBoard
