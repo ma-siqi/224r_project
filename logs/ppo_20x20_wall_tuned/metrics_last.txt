@@ -1,0 +1,25 @@
+-----------------------------------------
+| metrics/                |             |
+|    coverage_ratio       | 0.993       |
+|    path_efficiency      | 2.69        |
+|    revisit_ratio        | 0.632       |
+| rollout/                |             |
+|    ep_len_mean          | 3e+03       |
+|    ep_rew_mean          | -3.45e+03   |
+| time/                   |             |
+|    fps                  | 678         |
+|    iterations           | 487         |
+|    time_elapsed         | 735         |
+|    total_timesteps      | 498688      |
+| train/                  |             |
+|    approx_kl            | 0.014107106 |
+|    clip_fraction        | 0.175       |
+|    clip_range           | 0.216       |
+|    entropy_loss         | -0.951      |
+|    explained_variance   | -0.039      |
+|    learning_rate        | 6.31e-05    |
+|    loss                 | -0.0524     |
+|    n_updates            | 4860        |
+|    policy_gradient_loss | -0.0129     |
+|    value_loss           | 0.00217     |
+-----------------------------------------

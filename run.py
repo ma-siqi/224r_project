@@ -10,7 +10,7 @@ from env import VacuumEnv
 from eval import evaluate_random_agent_steps, RandomAgent
 from eval import export_random_metrics
 from eval import evaluate_model, save_metrics_with_summary, evaluate_vec_model
-from eval import MetricWrapper, MetricCallback
+from eval import MetricWrapper, MetricCallback, compute_coverage_ratio, compute_redundancy_rate, compute_revisit_ratio
 from env import WrappedVacuumEnv
 
 import numpy as np
@@ -184,74 +184,99 @@ def generate_eval_layout_grid():
 # --------------------------------------
 # Rollout and save animation
 # --------------------------------------
-def rollout_and_record(env, model, filename="vacuum_run.mp4", max_steps=100, walls=None, algo='dqn'):
-    obs, _ = env.reset(options={"walls": walls})
-    frames = []
-    if isinstance(obs, dict):
-        if algo == 'dqn':
-            obs = flatten(env.observation_space, obs)
 
-    if isinstance(obs, dict):
-        obs = FlattenObservation(env).observation(obs)
-
-    for _ in range(max_steps):
-        fig = env.unwrapped.render_frame()
-        frames.append(fig)
-
-        try:
-            action, _ = model.predict(obs)
-        except:
-            action, _ = model.predict(obs, deterministic=True)
-        obs, _, terminated, truncated, _ = env.step(action)
-
-        if terminated or truncated:
-            break
-
-    # Save animation
-    fig, ax = plt.subplots()
-    im = ax.imshow(frames[0])
-    ax.axis("off")
-
-    def update(i):
-        im.set_array(frames[i])
-        return [im]
-
-    ani = animation.FuncAnimation(
-        fig, update, frames=len(frames), interval=100, blit=True
-    )
-
-    ani.save(filename, writer="ffmpeg")
-    plt.close(fig)
-    print(f"Video saved to {filename}")
-
-def rollout_and_save_last_frame(env, model, filename="last_frame.png", max_steps=100, walls=None, dir_name = "logs", algo='ppo'):
-    obs, _ = env.reset(options={"walls": walls})
-    last_frame = None
-
-    if isinstance(obs, dict):
-        if algo == 'dqn':
-            obs = flatten(env.observation_space, obs)
-
-    for _ in range(max_steps):
-        last_frame = env.unwrapped.render_frame()  # Only keep the latest frame
-
-        try:
-            action, _ = model.predict(obs)
-        except:
-            action, _ = model.predict(obs, deterministic=True)
-        obs, _, terminated, truncated, _ = env.step(action)
-
-        if terminated or truncated:
-            break
+def eval_and_save(env, model, n_episodes=5, max_steps=100, walls=None, 
+                  dir_name = "logs", algo='ppo', mode="pic", name="eval"):
     
-    os.makedirs(os.path.dirname(dir_name), exist_ok=True)
+    all_metrics = []
+    os.makedirs(dir_name, exist_ok=True)
+    for i in range(n_episodes):
+        obs, _ = env.reset(options={"walls": walls})
+        last_frame = None
+        episode_reward = 0
+        steps = 0
 
-    plt.figure()
-    plt.imshow(last_frame)
-    plt.axis("off")
-    plt.savefig(os.path.join(dir_name, filename), bbox_inches="tight", pad_inches=0)
-    plt.close()
-    print(f"Last frame saved to {filename}")
+        if isinstance(obs, dict):
+            if algo == 'dqn':
+                obs = flatten(env.observation_space, obs)
+
+        for steps in range(max_steps):
+            frames = []
+            frame = env.unwrapped.render_frame()
+            if mode == "video":
+                frames.append(frame)
+            else:
+                last_frame = frame
+
+            try:
+                action, _ = model.predict(obs)
+            except:
+                action, _ = model.predict(obs, deterministic=True)
+            obs, reward, terminated, truncated, _ = env.step(action)
+
+            episode_reward += reward
+            if terminated or truncated:
+                break
+
+        metrics = {
+            "episode_length": steps + 1,
+            "episode_reward": episode_reward,
+            "coverage_ratio": compute_coverage_ratio(env.unwrapped),
+            "revisit_ratio": compute_revisit_ratio(env.unwrapped),
+            "redundancy_ratio": compute_redundancy_rate(env.unwrapped)
+        }
+
+        all_metrics.append(metrics)
+
+        fname = f"{name}_ep{i}"
+        if mode == "video":
+            # Save animation
+            fig, ax = plt.subplots()
+            im = ax.imshow(frames[0])
+            ax.axis("off")
+
+            def update(i):
+                im.set_array(frames[i])
+                return [im]
+
+            ani = animation.FuncAnimation(
+                fig, update, frames=len(frames), interval=100, blit=True
+            )
+
+            ani.save(os.path.join(dir_name, fname + ".mp4"), writer="ffmpeg")
+            plt.close(fig)
+            print(f"Video saved to {fname}.mp4")
+        else:
+            plt.figure()
+            plt.imshow(last_frame)
+            plt.axis("off")
+            plt.savefig(os.path.join(dir_name, fname + ".png"), bbox_inches="tight", pad_inches=0)
+            plt.close()
+            print(f"Last frame saved to {fname}")
+
+    # Save all metrics to JSON
+    metrics_path = os.path.join(dir_name, "all_metrics.json")
+    with open(metrics_path, "w") as f:
+        json.dump(all_metrics, f, indent=4)
+    print(f"All metrics saved to {metrics_path}")
+
+    # Compute mean and std
+    keys = all_metrics[0].keys()
+    summary = {
+        k: {
+            "mean": float(np.mean([m[k] for m in all_metrics])),
+            "std": float(np.std([m[k] for m in all_metrics]))
+        }
+        for k in keys
+    }
+
+    summary_path = os.path.join(dir_name, "summary_metrics.json")
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=4)
+
+    print("Evaluation Summary:")
+    for k, v in summary.items():
+        print(f"{k}: mean={v['mean']:.3f}, std={v['std']:.3f}")
 
 
 if __name__ == "__main__":
@@ -265,7 +290,7 @@ if __name__ == "__main__":
                         help="Grid size as two integers (e.g., 40 30)")
     parser.add_argument("--wall_mode", choices=["random", "hardcoded", "none"], default="random",
                         help="Wall layout: 'none', 'random' or 'hardcoded' (only applies to 40x30)")
-    parser.add_argument("--dirt_num", type=float, default=0,
+    parser.add_argument("--dirt_num", type=float, default=5,
                         help="Number of dirt clusters; 0 for all dirty")
     args = parser.parse_args()
 
@@ -287,7 +312,7 @@ if __name__ == "__main__":
         eval_walls = None
 
     # Load best hyperparameters if available
-    param_path = Path(f"optuna_results/{algo}_best_params.json")
+    param_path = Path(f"optuna_results/dirt_num_5/{algo}_best_params.json")
     if param_path.exists():
         with open(param_path, "r") as f:
             best_params = json.load(f)
@@ -377,17 +402,12 @@ if __name__ == "__main__":
 
         # Save the final trajectory
         print("Saving PPO training trajectory...")
-        rollout_and_save_last_frame(base_env, model, filename="ppo_train.png", max_steps=3000, walls=walls, dir_name="./logs/ppo", algo='ppo')
+        eval_and_save(base_env, model, n_episodes=10, max_steps=100, walls=walls, dir_name="./logs/ppo", algo='ppo', name='train')
 
         # Save best eval trajectory
         print("Saving PPO eval trajectory...")
-        rollout_and_save_last_frame(eval_base_env, model, filename="ppo_eval.png", max_steps=3000, walls=eval_walls, dir_name = "./logs/ppo", algo='ppo')
+        eval_and_save(eval_base_env, model, n_episodes=10, max_steps=100, walls=eval_walls, dir_name = "./logs/ppo", algo='ppo', name='eval')
         #rollout_and_record(eval_env, model, filename="ppo_eval.mp4", max_steps=3000, walls=eval_walls)
-
-        # Save to file with summary
-        #metrics = evaluate_vec_model(model, eval_env, n_episodes=20)
-        #save_metrics_with_summary(metrics, output_path="./logs/ppo/evaluation_metrics.json")
-
 
     elif algo == "dqn":
         # --------------------------------------
