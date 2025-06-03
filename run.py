@@ -2,14 +2,16 @@ import gymnasium as gym
 from gymnasium.envs.registration import register
 from gymnasium.wrappers import TimeLimit
 from gymnasium import spaces
+from gymnasium.spaces.utils import flatten
+
 import os
 
 from env import VacuumEnv
-from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper
-from her import VacuumGoalWrapper, HerReplayBufferForDQN
-from eval import MetricWrapper, MetricCallback, evaluate_random_agent_steps, RandomAgent
+from eval import evaluate_random_agent_steps, RandomAgent
 from eval import export_random_metrics
-from eval import evaluate_model, save_metrics_with_summary
+from eval import evaluate_model, save_metrics_with_summary, evaluate_vec_model
+from eval import MetricWrapper, MetricCallback
+from env import WrappedVacuumEnv
 
 import numpy as np
 import json
@@ -27,6 +29,7 @@ from stable_baselines3 import DQN
 from stable_baselines3.common.callbacks import EvalCallback
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
 # --------------------------------------
 # Register the robot vacuum environment
@@ -181,9 +184,15 @@ def generate_eval_layout_grid():
 # --------------------------------------
 # Rollout and save animation
 # --------------------------------------
-def rollout_and_record(env, model, filename="vacuum_run.mp4", max_steps=100, walls=None):
+def rollout_and_record(env, model, filename="vacuum_run.mp4", max_steps=100, walls=None, algo='dqn'):
     obs, _ = env.reset(options={"walls": walls})
     frames = []
+    if isinstance(obs, dict):
+        if algo == 'dqn':
+            obs = flatten(env.observation_space, obs)
+
+    if isinstance(obs, dict):
+        obs = FlattenObservation(env).observation(obs)
 
     for _ in range(max_steps):
         fig = env.render_frame()
@@ -215,12 +224,16 @@ def rollout_and_record(env, model, filename="vacuum_run.mp4", max_steps=100, wal
     plt.close(fig)
     print(f"Video saved to {filename}")
 
-def rollout_and_save_last_frame(env, model, filename="last_frame.png", max_steps=100, walls=None, dir_name = "logs"):
+def rollout_and_save_last_frame(env, model, filename="last_frame.png", max_steps=100, walls=None, dir_name = "logs", algo='ppo'):
     obs, _ = env.reset(options={"walls": walls})
     last_frame = None
 
+    if isinstance(obs, dict):
+        if algo == 'dqn':
+            obs = flatten(env.observation_space, obs)
+
     for _ in range(max_steps):
-        last_frame = env.render_frame()  # Only keep the latest frame
+        last_frame = env.unwrapped.render_frame()  # Only keep the latest frame
 
         try:
             action, _ = model.predict(obs)
@@ -250,10 +263,10 @@ if __name__ == "__main__":
     parser.add_argument("--timesteps", type=int, default=500_000, help="Number of training timesteps")
     parser.add_argument("--grid_size", type=int, nargs=2, default=[20, 20],
                         help="Grid size as two integers (e.g., 40 30)")
-    parser.add_argument("--wall_mode", choices=["random", "hardcoded"], default="random",
-                        help="Wall layout: 'random' or 'hardcoded' (only applies to 40x30)")
-    parser.add_argument("--dirt_num", type=float, default=5,
-                        help="Number of dirt clusters")
+    parser.add_argument("--wall_mode", choices=["random", "hardcoded", "none"], default="random",
+                        help="Wall layout: 'none', 'random' or 'hardcoded' (only applies to 40x30)")
+    parser.add_argument("--dirt_num", type=float, default=0,
+                        help="Number of dirt clusters; 0 for all dirty")
     args = parser.parse_args()
 
     algo = args.algo
@@ -266,6 +279,9 @@ if __name__ == "__main__":
     if wall_mode == "hardcoded" and grid_size == (40, 30):
         walls = generate_1b1b_layout_grid()
         eval_walls = generate_eval_layout_grid()
+    elif wall_mode == "none":
+        walls = []
+        eval_walls = []
     else:
         walls = None
         eval_walls = None
@@ -283,6 +299,7 @@ if __name__ == "__main__":
         # Random baseline
         # ---------------
         max_steps = 3000
+
         base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirt_num=dirt_num)
         base_env = TimeLimit(base_env, max_episode_steps=max_steps)
         base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
@@ -309,34 +326,28 @@ if __name__ == "__main__":
         # --------------------------------------
         max_steps = 3000
 
-        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirt_num=dirt_num)
-        base_env = TimeLimit(base_env, max_episode_steps=max_steps)
-        base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
-        base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
+        train_factory = WrappedVacuumEnv(grid_size=grid_size, dirt_num=dirt_num, max_steps=max_steps, walls=walls, algo=algo)
+        train_env = DummyVecEnv([train_factory])
+        train_env = VecNormalize(train_env, norm_obs=False, norm_reward=True)
 
-        # monitor for stats logging
-        base_env = MetricWrapper(base_env)
-        monitored_env = Monitor(base_env)
+        eval_factory = WrappedVacuumEnv(grid_size=grid_size, dirt_num=dirt_num, max_steps=max_steps, walls=walls, algo=algo)
+        eval_env = DummyVecEnv([eval_factory])
+        eval_env = VecNormalize(eval_env, norm_obs=False, norm_reward=True)
 
-        # evaluation environment
-        eval_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirt_num=dirt_num)
-        eval_env = TimeLimit(eval_env, max_episode_steps=max_steps)
-        eval_env = ExplorationBonusWrapper(eval_env, bonus=0.3)
-        eval_env = ExploitationPenaltyWrapper(eval_env, time_penalty=-0.002, stay_penalty=-0.1)
-
-        eval_env = MetricWrapper(eval_env)
-        eval_env = Monitor(eval_env)
+        base_env = train_factory.base_env
+        eval_base_env = eval_factory.base_env
 
         # reset before training
-        obs, _ = monitored_env.reset(options={"walls": walls}, seed=42)
-        obs, _ = eval_env.reset(options={"walls": eval_walls}, seed=42)
-        check_env(monitored_env, warn=True)
-        check_env(eval_env, warn=True)
+        #obs, _ = base_env.reset(options={"walls": walls})
+        #obs, _ = eval_base_env.reset(options={"walls": walls})
+
+        check_env(base_env, warn=True)
+        check_env(eval_base_env, warn=True)
 
         # PPO agent with best hyperparameters if available
         model = PPO(
-            "MultiInputPolicy",
-            monitored_env,
+            "MlpPolicy",
+            train_env,
             verbose=1,
             tensorboard_log="./tensorboard/",
             **best_params
@@ -347,16 +358,25 @@ if __name__ == "__main__":
             callback=MetricCallback(),
         )
 
+        # Save VecNormalize stats
+        train_env.save("logs/ppo/vec_normalize.pkl")
+
+        # Load stats into eval env
+        eval_env = VecNormalize.load("logs/ppo/vec_normalize.pkl", eval_env)
+        eval_env.training = False
+        eval_env.norm_reward = False
+
         # Save the final trajectory
         print("Saving PPO training trajectory...")
-        rollout_and_save_last_frame(monitored_env.unwrapped, model, filename="ppo_train.png", max_steps=3000, walls=walls, dir_name="./logs/ppo")
+        rollout_and_save_last_frame(base_env, model, filename="ppo_train.png", max_steps=100, walls=walls, dir_name="./logs/ppo", algo='ppo')
 
         # Save best eval trajectory
         print("Saving PPO eval trajectory...")
-        rollout_and_save_last_frame(eval_env.unwrapped, model, filename="ppo_eval.png", max_steps=3000, walls=eval_walls, dir_name = "./logs/ppo")
+        rollout_and_save_last_frame(eval_base_env, model, filename="ppo_eval.png", max_steps=100, walls=eval_walls, dir_name = "./logs/ppo", algo='ppo')
+        #rollout_and_record(eval_env.unwrapped, model, filename="ppo_eval.mp4", max_steps=3000, walls=eval_walls)
 
         # Save to file with summary
-        metrics = evaluate_model(model, eval_env, n_episodes=20)
+        metrics = evaluate_vec_model(model, eval_env, n_episodes=20)
         save_metrics_with_summary(metrics, output_path="./logs/ppo/evaluation_metrics.json")
 
 
@@ -366,30 +386,23 @@ if __name__ == "__main__":
         # --------------------------------------
         max_steps = 3000
 
-        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirt_num=dirt_num)
-        base_env = TimeLimit(base_env, max_episode_steps=max_steps)
-        base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
-        base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
+        train_factory = WrappedVacuumEnv(grid_size=grid_size, dirt_num=dirt_num, max_steps=max_steps, walls=walls, algo=algo)
+        train_env = DummyVecEnv([train_factory])
+        train_env = VecNormalize(train_env, norm_obs=False, norm_reward=True)
 
-        base_env = MetricWrapper(base_env)
-        monitored_env = Monitor(base_env)
+        eval_factory = WrappedVacuumEnv(grid_size=grid_size, dirt_num=dirt_num, max_steps=max_steps, walls=walls, algo=algo)
+        eval_env = DummyVecEnv([eval_factory])
+        eval_env = VecNormalize(eval_env, norm_obs=False, norm_reward=True)
 
-        eval_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirt_num=dirt_num)
-        eval_env = TimeLimit(eval_env, max_episode_steps=max_steps)
-        eval_env = ExplorationBonusWrapper(eval_env, bonus=0.3)
-        eval_env = ExploitationPenaltyWrapper(eval_env, time_penalty=-0.002, stay_penalty=-0.1)
+        base_env = train_factory.base_env
+        eval_base_env = eval_factory.base_env
 
-        eval_env = MetricWrapper(eval_env)
-        eval_env = Monitor(eval_env)
-
-        obs, _ = monitored_env.reset(options={"walls": walls})
-        obs, _ = eval_env.reset(options={"walls": eval_walls})
-        check_env(monitored_env, warn=True)
-        check_env(eval_env, warn=True)
+        check_env(base_env, warn=True)
+        check_env(eval_base_env, warn=True)
 
         model = DQN(
-            "MultiInputPolicy",
-            monitored_env,
+            "MlpPolicy",
+            train_env,
             verbose=1,
             tensorboard_log="./tensorboard/",
             **best_params
@@ -400,14 +413,25 @@ if __name__ == "__main__":
             callback=MetricCallback(),
         )
 
-        print("Saving DQN training trajectory...")
-        rollout_and_save_last_frame(monitored_env.unwrapped, model, filename="dqn_train.png", max_steps=6000, walls=walls, dir_name="./logs/dqn")
+        # Save VecNormalize stats
+        train_env.save("logs/dqn/vec_normalize.pkl")
 
+        # Load stats into eval env
+        eval_env = VecNormalize.load("logs/dqn/vec_normalize.pkl", eval_env)
+        eval_env.training = False
+        eval_env.norm_reward = False
+
+        # Save the final trajectory
+        print("Saving DQN training trajectory...")
+        rollout_and_save_last_frame(base_env, model, filename="dqn_train.png", max_steps=3000, walls=walls, dir_name="./logs/dqn", algo='dqn')
+
+        # Save best eval trajectory
         print("Saving DQN eval trajectory...")
-        rollout_and_save_last_frame(eval_env.unwrapped, model, filename="dqn_eval.png", max_steps=6000, walls=eval_walls, dir_name="./logs/dqn")
+        rollout_and_save_last_frame(eval_base_env, model, filename="dqn_train.png", max_steps=3000, walls=eval_walls, dir_name = "./logs/dqn", algo='dqn')
+        #rollout_and_record(eval_env.unwrapped, model, filename="ppo_eval.mp4", max_steps=3000, walls=eval_walls)
 
         # Save to file with summary
-        metrics = evaluate_model(model, eval_env, n_episodes=20)
+        metrics = evaluate_vec_model(model, eval_env, n_episodes=20)
         save_metrics_with_summary(metrics, output_path="./logs/dqn/evaluation_metrics.json")
     
     elif algo == "her":
