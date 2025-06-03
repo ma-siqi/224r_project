@@ -287,7 +287,7 @@ if __name__ == "__main__":
         eval_walls = None
 
     # Load best hyperparameters if available
-    param_path = Path(f"optuna_results/dirt_num_5/{algo}_best_params.json")
+    param_path = Path(f"optuna_results/{algo}_best_params.json")
     if param_path.exists():
         with open(param_path, "r") as f:
             best_params = json.load(f)
@@ -340,6 +340,15 @@ if __name__ == "__main__":
         # reset before training
         #obs, _ = base_env.reset(options={"walls": walls})
         #obs, _ = eval_base_env.reset(options={"walls": walls})
+        eval_callback = EvalCallback(
+            eval_env,
+            best_model_save_path="./logs/ppo/models/",
+            log_path="./logs/ppo/",
+            eval_freq=10000,             # Evaluate every N steps
+            deterministic=True,
+            render=False,
+            n_eval_episodes=10,           # Evaluate using multiple episodes
+        )
 
         check_env(base_env, warn=True)
         check_env(eval_base_env, warn=True)
@@ -355,7 +364,7 @@ if __name__ == "__main__":
 
         model.learn(
             total_timesteps=total_timesteps,
-            callback=MetricCallback(),
+            callback=[eval_callback, MetricCallback()],
         )
 
         # Save VecNormalize stats
@@ -376,8 +385,8 @@ if __name__ == "__main__":
         #rollout_and_record(eval_env, model, filename="ppo_eval.mp4", max_steps=3000, walls=eval_walls)
 
         # Save to file with summary
-        metrics = evaluate_vec_model(model, eval_env, n_episodes=20)
-        save_metrics_with_summary(metrics, output_path="./logs/ppo/evaluation_metrics.json")
+        #metrics = evaluate_vec_model(model, eval_env, n_episodes=20)
+        #save_metrics_with_summary(metrics, output_path="./logs/ppo/evaluation_metrics.json")
 
 
     elif algo == "dqn":
