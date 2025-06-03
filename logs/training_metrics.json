@@ -1,1 +1,1 @@
-{"coverage_ratio": [0.3611859838274933, 0.5148247978436657], "path_efficiency": [0.7978436657681941, 0.8544474393530997], "revisit_ratio": [0.5472972972972973, 0.39747634069400634], "episode_rewards": [-13188.17, -26445.62], "episode_lengths": [3000, 3000], "cleaning_time": []}
+{"coverage_ratio": [0.4797843665768194], "path_efficiency": [0.9353099730458221], "revisit_ratio": [0.48703170028818443], "episode_rewards": [-13214.209999], "episode_lengths": [3000], "cleaning_time": []}

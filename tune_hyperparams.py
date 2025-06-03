@@ -5,8 +5,9 @@ from stable_baselines3 import PPO, DQN
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.monitor import Monitor
 
-from env import VacuumEnv
+from env import VacuumEnv, WrappedVacuumEnv
 from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from run import generate_1b1b_layout_grid, rollout_and_record
 
 import optuna
@@ -26,19 +27,13 @@ register(
 # --------------------------------------
 # Make monitored, wrapped environment
 # --------------------------------------
-def make_env(grid_size=(20, 20), use_layout=False, max_steps=3000, dirt_num=5):
+def make_env(grid_size=(20, 20), use_layout=False, max_steps=3000, dirt_num=5, algo='ppo'):
     walls = generate_1b1b_layout_grid() if use_layout else None
+    train_factory = WrappedVacuumEnv(grid_size, dirt_num, max_steps, algo='ppo', walls=walls)
+    train_env = DummyVecEnv([train_factory])
+    train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True)
 
-    def _env():
-        env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="human", dirt_num=dirt_num)
-        env = TimeLimit(env, max_episode_steps=max_steps)
-        env = ExplorationBonusWrapper(env, bonus=0.3)
-        env = ExploitationPenaltyWrapper(env, time_penalty=-0.002, stay_penalty=-0.1)
-        env = Monitor(env)
-        env.reset(options={"walls": walls})
-        return env
-
-    return _env
+    return train_env
 
 # --------------------------------------
 # Search spaces
@@ -65,9 +60,8 @@ dqn_search_space = {
 # Objective functions
 # --------------------------------------
 def ppo_objective(trial):
-    env_fn = make_env(grid_size=(20, 20), use_layout=True, dirt_num=5)
-    env = env_fn()
-    eval_env = env_fn()
+    train_env = make_env(algo='ppo')
+    eval_env = make_env(algo='ppo')
 
     lr_low, lr_high, lr_scale = ppo_search_space["learning_rate"]
     ent_low, ent_high, ent_scale = ppo_search_space["ent_coef"]
@@ -81,16 +75,21 @@ def ppo_objective(trial):
         "gamma": trial.suggest_float("gamma", gamma_low, gamma_high),
         "clip_range": trial.suggest_float("clip_range", clip_low, clip_high),
     }
-
-    model = PPO("MultiInputPolicy", env, verbose=0, **params)
+    
+    model = PPO("MlpPolicy", train_env, verbose=0, **params)
     model.learn(total_timesteps=100_000)
-    mean_reward, _ = evaluate_policy(model, eval_env, n_eval_episodes=5)
+
+    eval_env.obs_rms = train_env.obs_rms
+    eval_env.ret_rms = train_env.ret_rms
+    eval_env.training = False
+    eval_env.norm_reward = False
+
+    mean_reward, _ = evaluate_policy(model, eval_env, n_eval_episodes=5, deterministic=True)
     return mean_reward
 
 def dqn_objective(trial):
-    env_fn = make_env(grid_size=(40, 30), use_layout=True, dirt_num=5)
-    env = env_fn()
-    eval_env = env_fn()
+    train_env = make_env(algo='dqn')
+    eval_env = make_env(algo='dqn')
 
     lr_low, lr_high, lr_scale = dqn_search_space["learning_rate"]
     exploration_frac_low, exploration_frac_high, _ = dqn_search_space["exploration_fraction"]
@@ -111,9 +110,14 @@ def dqn_objective(trial):
         "gamma": trial.suggest_float("gamma", gamma_low, gamma_high),
     }
 
-    model = DQN("MultiInputPolicy", env, verbose=0, **params)
+    model = DQN("MlpPolicy", train_env, verbose=0, **params)
     model.learn(total_timesteps=100_000)
-    mean_reward, _ = evaluate_policy(model, eval_env, n_eval_episodes=5)
+    eval_env.obs_rms = train_env.obs_rms
+    eval_env.ret_rms = train_env.ret_rms
+    eval_env.training = False
+    eval_env.norm_reward = False
+
+    mean_reward, _ = evaluate_policy(model, eval_env, n_eval_episodes=5, deterministic=True)
     return mean_reward
 
 # --------------------------------------

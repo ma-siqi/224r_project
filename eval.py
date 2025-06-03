@@ -222,6 +222,64 @@ def save_metrics_with_summary(metrics, output_path):
 
     print(f"Metrics saved to {output_path}")
 
+def evaluate_vec_model(model, env, n_episodes=10, render=False) -> Dict[str, List[float]]:
+    """
+    Evaluate a trained model and return detailed metrics.
+    Works with VecNormalize + DummyVecEnv.
+    """
+    metrics = {
+        "episode_rewards": [],
+        "episode_lengths": [],
+        "coverage_ratio": [],
+        "path_efficiency": [],
+        "revisit_ratio": [],
+        "cleaning_time": []
+    }
+
+    for episode in range(n_episodes):
+        obs = env.reset()
+        if isinstance(obs, tuple):
+            obs = obs[0]  # remove info if present
+
+        done = False
+        episode_reward = 0
+        episode_length = 0
+
+        while not done:
+            action, _ = model.predict(obs, deterministic=True)
+
+            obs, reward, terminated, truncated, info = env.step(action)
+
+            # Unpack from VecEnv (batched)
+            obs = obs[0]
+            reward = reward[0]
+            done = terminated[0] or truncated[0]
+            info = info[0]
+
+            episode_reward += reward
+            episode_length += 1
+
+            if done:
+                metrics["episode_rewards"].append(episode_reward)
+                metrics["episode_lengths"].append(episode_length)
+                metrics["coverage_ratio"].append(info.get("coverage_ratio", 0))
+                metrics["path_efficiency"].append(info.get("path_efficiency", 0))
+                metrics["revisit_ratio"].append(info.get("revisit_ratio", 0))
+                if "cleaning_time" in info:
+                    metrics["cleaning_time"].append(info["cleaning_time"])
+
+                print(f"Episode {episode + 1}")
+                print(f"Reward: {episode_reward:.2f}")
+                print(f"Length: {episode_length}")
+                print(f"Coverage: {info.get('coverage_ratio', 0):.2%}")
+                print(f"Path Efficiency: {info.get('path_efficiency', 0):.2f}")
+                print(f"Revisit Ratio: {info.get('revisit_ratio', 0):.2f}")
+                if "cleaning_time" in info:
+                    print(f"Cleaning Time: {info['cleaning_time']}")
+                print("---")
+
+    return metrics
+
 
 class RandomAgent:
     """Simple random agent for baseline comparison"""

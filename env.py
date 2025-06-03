@@ -1,8 +1,16 @@
 import gymnasium as gym
 from gymnasium import spaces
+from gymnasium.wrappers import TimeLimit
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+
+from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper
+from her import VacuumGoalWrapper, HerReplayBufferForDQN
+from eval import MetricWrapper, MetricCallback
+from gymnasium.wrappers import FlattenObservation
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.monitor import Monitor
 
 class VacuumEnv(gym.Env):
     metadata = {"render_modes": ["human", "plot"]}
@@ -356,4 +364,27 @@ class VacuumEnv(gym.Env):
         plt.close(fig)
 
         return img
+
+class WrappedVacuumEnv:
+    def __init__(self, grid_size, dirt_num, max_steps, algo, walls=None):
+        self.walls = walls
+        self.grid_size = grid_size
+        self.dirt_num = dirt_num
+        self.max_steps = max_steps
+        self.base_env = None
+        self.algo = algo
+
+    def __call__(self):
+        env = gym.make("VacuumEnv-v0", grid_size=self.grid_size, render_mode="plot", dirt_num=self.dirt_num)
+        env = TimeLimit(env, max_episode_steps=self.max_steps)
+        env = ExplorationBonusWrapper(env, bonus=0.3)
+        env = ExploitationPenaltyWrapper(env, time_penalty=-0.002, stay_penalty=-0.1)
+        env = MetricWrapper(env)
+        env = Monitor(env)
+
+        env = FlattenObservation(env)
+        self.base_env = env
+        env.reset(options={"walls": self.walls})
+        return env
+
 
