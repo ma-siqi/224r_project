@@ -2,6 +2,8 @@ import gymnasium as gym
 from gymnasium.envs.registration import register
 from gymnasium.wrappers import TimeLimit
 from gymnasium import spaces
+from gymnasium.wrappers import FlattenObservation
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 import os
 
 from env import VacuumEnv
@@ -252,7 +254,7 @@ if __name__ == "__main__":
                         help="Grid size as two integers (e.g., 40 30)")
     parser.add_argument("--wall_mode", choices=["random", "hardcoded"], default="random",
                         help="Wall layout: 'random' or 'hardcoded' (only applies to 40x30)")
-    parser.add_argument("--dirt_num", type=float, default=5,
+    parser.add_argument("--dirt_num", type=float, default=0,
                         help="Number of dirt clusters")
     args = parser.parse_args()
 
@@ -316,7 +318,7 @@ if __name__ == "__main__":
 
         # monitor for stats logging
         base_env = MetricWrapper(base_env)
-        monitored_env = Monitor(base_env)
+        base_env = Monitor(base_env)
 
         # evaluation environment
         eval_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirt_num=dirt_num)
@@ -328,15 +330,15 @@ if __name__ == "__main__":
         eval_env = Monitor(eval_env)
 
         # reset before training
-        obs, _ = monitored_env.reset(options={"walls": walls}, seed=42)
-        obs, _ = eval_env.reset(options={"walls": eval_walls}, seed=42)
-        check_env(monitored_env, warn=True)
+        obs, _ = base_env.reset(options={"walls": walls})
+        obs, _ = eval_env.reset(options={"walls": walls})
+        check_env(base_env, warn=True)
         check_env(eval_env, warn=True)
 
         # PPO agent with best hyperparameters if available
         model = PPO(
             "MultiInputPolicy",
-            monitored_env,
+            base_env,
             verbose=1,
             tensorboard_log="./tensorboard/",
             **best_params
@@ -349,11 +351,12 @@ if __name__ == "__main__":
 
         # Save the final trajectory
         print("Saving PPO training trajectory...")
-        rollout_and_save_last_frame(monitored_env.unwrapped, model, filename="ppo_train.png", max_steps=3000, walls=walls, dir_name="./logs/ppo")
+        rollout_and_save_last_frame(base_env.unwrapped, model, filename="ppo_train.png", max_steps=3000, walls=walls, dir_name="./logs/ppo")
 
         # Save best eval trajectory
         print("Saving PPO eval trajectory...")
         rollout_and_save_last_frame(eval_env.unwrapped, model, filename="ppo_eval.png", max_steps=3000, walls=eval_walls, dir_name = "./logs/ppo")
+        rollout_and_record(eval_env.unwrapped, model, filename="ppo_eval.mp4", max_steps=3000, walls=eval_walls)
 
         # Save to file with summary
         metrics = evaluate_model(model, eval_env, n_episodes=20)
@@ -405,6 +408,7 @@ if __name__ == "__main__":
 
         print("Saving DQN eval trajectory...")
         rollout_and_save_last_frame(eval_env.unwrapped, model, filename="dqn_eval.png", max_steps=6000, walls=eval_walls, dir_name="./logs/dqn")
+        rollout_and_record(eval_env.unwrapped, model, filename="dqn_eval.mp4", max_steps=6000, walls=eval_walls)
 
         # Save to file with summary
         metrics = evaluate_model(model, eval_env, n_episodes=20)

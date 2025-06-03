@@ -34,10 +34,14 @@ class VacuumEnv(gym.Env):
         self.use_internal_stuck_penalty = use_counter  # default to using counter to penalize being stuck; disable when using wrappers
 
         self.action_space = spaces.Discrete(3) # 0=forward, 1=rotate left, 2=rotate right
+
         self.observation_space = spaces.Dict({
-            "agent_pos": spaces.MultiDiscrete([grid_size[0], grid_size[1]]), # agent position on the grid
-            "agent_orient": spaces.Discrete(8), # the agent can observe 8 tiles around itself
-            "local_view": spaces.MultiBinary(3) # [front, left, right]
+            "agent_pos": spaces.MultiDiscrete([self.grid_size[0], self.grid_size[1]]),
+            "agent_orient": spaces.Box(low=0, high=7, shape=(1,), dtype=np.uint8),
+            "local_view": spaces.MultiBinary(3),
+            "cleaned_map": spaces.Box(low=0, high=1, shape=self.grid_size, dtype=np.uint8),
+            "dirt_map": spaces.Box(low=0, high=1, shape=self.grid_size, dtype=np.uint8),
+            "path_map": spaces.Box(low=0, high=1, shape=self.grid_size, dtype=np.uint8),
         })
 
         self.orientations = {
@@ -70,7 +74,10 @@ class VacuumEnv(gym.Env):
 
         # generate dirt layout: only dirty_ratio non-obstacle tiles are dirty
         self.dirt_map = np.zeros(self.grid_size, dtype=np.uint8)
-        self.generate_random_dirt_clusters(self.dirt_num)
+        if self.dirt_num == 0:
+            self.dirt_map = np.ones(self.grid_size, dtype=np.uint8) - self.obstacle_map
+        else:
+            self.generate_random_dirt_clusters(self.dirt_num)
 
         self.agent_pos = list(self.start_pos)
         self.agent_orient = 2 # agent starting orientation is facing right
@@ -157,14 +164,18 @@ class VacuumEnv(gym.Env):
             attempts += 1
 
     def _get_obs(self):
-        """Check surroundings and return observation"""
+        """Return structured observation (flattened later by FlattenObservation)"""
         front = self._check_cell_in_direction(self.agent_orient)
         left = self._check_cell_in_direction((self.agent_orient - 2) % 8)
         right = self._check_cell_in_direction((self.agent_orient + 2) % 8)
+
         return {
-            "agent_pos": np.array(self.agent_pos, dtype=np.int32),
-            "agent_orient": self.agent_orient,
-            "local_view": np.array([front, left, right], dtype=np.int8)
+            "agent_pos": np.array(self.agent_pos, dtype=np.int32),             # shape: (2,)
+            "agent_orient": np.array([self.agent_orient], dtype=np.uint8),    # shape: (1,)
+            "local_view": np.array([front, left, right], dtype=np.int8),     # shape: (3,)
+            "cleaned_map": self.cleaned_map.astype(np.uint8),                 # shape: (H, W)
+            "dirt_map": self.dirt_map.astype(np.uint8),                       # shape: (H, W)
+            "path_map": self.path_map.astype(np.uint8),                       # shape: (H, W)
         }
 
     def _check_cell_in_direction(self, direction):
