@@ -3,6 +3,7 @@ from gymnasium.envs.registration import register
 from gymnasium.wrappers import TimeLimit
 from gymnasium import spaces
 from gymnasium.wrappers import FlattenObservation
+from gymnasium.spaces.utils import flatten
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 import os
 
@@ -187,6 +188,9 @@ def rollout_and_record(env, model, filename="vacuum_run.mp4", max_steps=100, wal
     obs, _ = env.reset(options={"walls": walls})
     frames = []
 
+    if isinstance(obs, dict):
+        obs = FlattenObservation(env).observation(obs)
+
     for _ in range(max_steps):
         fig = env.render_frame()
         frames.append(fig)
@@ -221,8 +225,11 @@ def rollout_and_save_last_frame(env, model, filename="last_frame.png", max_steps
     obs, _ = env.reset(options={"walls": walls})
     last_frame = None
 
+    if isinstance(obs, dict):
+        obs = flatten(env.observation_space, obs)
+
     for _ in range(max_steps):
-        last_frame = env.render_frame()  # Only keep the latest frame
+        last_frame = env.unwrapped.render_frame()  # Only keep the latest frame
 
         try:
             action, _ = model.predict(obs)
@@ -377,6 +384,8 @@ if __name__ == "__main__":
         base_env = MetricWrapper(base_env)
         monitored_env = Monitor(base_env)
 
+        monitored_env = FlattenObservation(monitored_env)
+
         eval_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirt_num=dirt_num)
         eval_env = TimeLimit(eval_env, max_episode_steps=max_steps)
         eval_env = ExplorationBonusWrapper(eval_env, bonus=0.3)
@@ -384,6 +393,8 @@ if __name__ == "__main__":
 
         eval_env = MetricWrapper(eval_env)
         eval_env = Monitor(eval_env)
+        
+        eval_env = FlattenObservation(eval_env)
 
         obs, _ = monitored_env.reset(options={"walls": walls})
         obs, _ = eval_env.reset(options={"walls": eval_walls})
@@ -391,7 +402,7 @@ if __name__ == "__main__":
         check_env(eval_env, warn=True)
 
         model = DQN(
-            "MultiInputPolicy",
+            "MlpPolicy",
             monitored_env,
             verbose=1,
             tensorboard_log="./tensorboard/",
@@ -404,11 +415,11 @@ if __name__ == "__main__":
         )
 
         print("Saving DQN training trajectory...")
-        rollout_and_save_last_frame(monitored_env.unwrapped, model, filename="dqn_train.png", max_steps=6000, walls=walls, dir_name="./logs/dqn")
+        rollout_and_save_last_frame(monitored_env, model, filename="dqn_train.png", max_steps=6000, walls=walls, dir_name="./logs/dqn")
 
         print("Saving DQN eval trajectory...")
-        rollout_and_save_last_frame(eval_env.unwrapped, model, filename="dqn_eval.png", max_steps=6000, walls=eval_walls, dir_name="./logs/dqn")
-        rollout_and_record(eval_env.unwrapped, model, filename="dqn_eval.mp4", max_steps=6000, walls=eval_walls)
+        rollout_and_save_last_frame(eval_env, model, filename="dqn_eval.png", max_steps=6000, walls=eval_walls, dir_name="./logs/dqn")
+        #rollout_and_record(eval_env, model, filename="dqn_eval.mp4", max_steps=6000, walls=eval_walls)
 
         # Save to file with summary
         metrics = evaluate_model(model, eval_env, n_episodes=20)
