@@ -27,8 +27,13 @@ register(
 # --------------------------------------
 # Make monitored, wrapped environment
 # --------------------------------------
-def make_env(grid_size=(20, 20), use_layout=False, max_steps=3000, dirt_num=5, algo='ppo'):
-    walls = generate_1b1b_layout_grid() if use_layout else None
+def make_env(grid_size=(20, 20), use_layout=False, max_steps=3000, dirt_num=5, algo='ppo', wall_mode="random"):
+    if wall_mode == "hardcoded":
+        walls = generate_1b1b_layout_grid()
+    elif wall_mode == "none":
+        walls = []
+    else:
+        walls = None
     train_factory = WrappedVacuumEnv(grid_size, dirt_num, max_steps, algo='ppo', walls=walls)
     train_env = DummyVecEnv([train_factory])
     train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True)

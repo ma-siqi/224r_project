@@ -207,6 +207,8 @@ def save_metrics_with_summary(metrics, output_path):
     summary = {}
     for key, values in metrics.items():
         values_np = np.array(values, dtype=np.float32)
+        for key in metrics:
+            metrics[key] = [float(v) for v in metrics[key]]
         summary[key] = {
             "mean": float(np.mean(values_np)) if len(values_np) > 0 else 0.0,
             "std": float(np.std(values_np)) if len(values_np) > 0 else 0.0
@@ -248,12 +250,12 @@ def evaluate_vec_model(model, env, n_episodes=10, render=False) -> Dict[str, Lis
         while not done:
             action, _ = model.predict(obs, deterministic=True)
 
-            obs, reward, terminated, truncated, info = env.step(action)
+            obs, reward, done, info = env.step([action])
 
             # Unpack from VecEnv (batched)
             obs = obs[0]
             reward = reward[0]
-            done = terminated[0] or truncated[0]
+            done = done[0]
             info = info[0]
 
             episode_reward += reward
@@ -267,6 +269,9 @@ def evaluate_vec_model(model, env, n_episodes=10, render=False) -> Dict[str, Lis
                 metrics["revisit_ratio"].append(info.get("revisit_ratio", 0))
                 if "cleaning_time" in info:
                     metrics["cleaning_time"].append(info["cleaning_time"])
+
+                is_truncated = info.get("TimeLimit.truncated", False)
+                print(f"Episode done. Truncated: {is_truncated}")
 
                 print(f"Episode {episode + 1}")
                 print(f"Reward: {episode_reward:.2f}")

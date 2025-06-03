@@ -263,10 +263,10 @@ if __name__ == "__main__":
     parser.add_argument("--timesteps", type=int, default=500_000, help="Number of training timesteps")
     parser.add_argument("--grid_size", type=int, nargs=2, default=[20, 20],
                         help="Grid size as two integers (e.g., 40 30)")
-    parser.add_argument("--wall_mode", choices=["random", "hardcoded"], default="random",
-                        help="Wall layout: 'random' or 'hardcoded' (only applies to 40x30)")
+    parser.add_argument("--wall_mode", choices=["random", "hardcoded", "none"], default="random",
+                        help="Wall layout: 'none', 'random' or 'hardcoded' (only applies to 40x30)")
     parser.add_argument("--dirt_num", type=float, default=0,
-                        help="Number of dirt clusters")
+                        help="Number of dirt clusters; 0 for all dirty")
     args = parser.parse_args()
 
     algo = args.algo
@@ -279,6 +279,9 @@ if __name__ == "__main__":
     if wall_mode == "hardcoded" and grid_size == (40, 30):
         walls = generate_1b1b_layout_grid()
         eval_walls = generate_eval_layout_grid()
+    elif wall_mode == "none":
+        walls = []
+        eval_walls = []
     else:
         walls = None
         eval_walls = None
@@ -365,11 +368,11 @@ if __name__ == "__main__":
 
         # Save the final trajectory
         print("Saving PPO training trajectory...")
-        rollout_and_save_last_frame(base_env, model, filename="ppo_train.png", max_steps=3000, walls=walls, dir_name="./logs/ppo", algo='ppo')
+        rollout_and_save_last_frame(base_env, model, filename="ppo_train.png", max_steps=100, walls=walls, dir_name="./logs/ppo", algo='ppo')
 
         # Save best eval trajectory
         print("Saving PPO eval trajectory...")
-        rollout_and_save_last_frame(eval_base_env, model, filename="ppo_eval.png", max_steps=3000, walls=eval_walls, dir_name = "./logs/ppo", algo='ppo')
+        rollout_and_save_last_frame(eval_base_env, model, filename="ppo_eval.png", max_steps=100, walls=eval_walls, dir_name = "./logs/ppo", algo='ppo')
         #rollout_and_record(eval_env.unwrapped, model, filename="ppo_eval.mp4", max_steps=3000, walls=eval_walls)
 
         # Save to file with summary
