@@ -17,6 +17,7 @@ import argparse
 from torch.utils.tensorboard import SummaryWriter
 from gymnasium.wrappers import TimeLimit
 from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper
+from datetime import datetime
 
 # Register custom environment
 gym.register(id="Vacuum-v0", entry_point="env:VacuumEnv")
@@ -27,22 +28,62 @@ os.makedirs(BASE_LOG_DIR, exist_ok=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# Training Constants
+MAX_STEPS = 3000  # Maximum steps per episode
+MAX_TIMESTEPS = 500000  # Maximum total timesteps for training
+
 # Hyperparameters
-GAMMA = 0.99
-LR = 1e-4
-BATCH_SIZE = 32
-BUFFER_SIZE = int(1e5)
+GAMMA = 0.9890489964807936  # From Optuna study
+LR = 1.0161969492721541e-05  # From Optuna study
+BATCH_SIZE = 80  # From Optuna study
+BUFFER_SIZE = int(5e5)
 START_TRAINING = 1000
 EPSILON_DECAY = 0.995
 MIN_EPSILON = 0.1
-UPDATE_TARGET_EVERY = 1000
-N_ATOMS = 51
-V_MIN = -10
-V_MAX = 10
-N_STEP = 3
-ALPHA = 0.6  # PER parameters
-BETA = 0.4
-BETA_INCREMENT = 0.001
+UPDATE_TARGET_EVERY = 2000
+N_ATOMS = 41  # From Optuna study
+V_MIN = -19.97256170921028  # From Optuna study
+V_MAX = 19.744371778269656  # From Optuna study
+N_STEP = 5  # From Optuna study
+ALPHA = 0.6843270904544203  # PER parameters from Optuna study
+BETA = 0.560936297194832  # From Optuna study
+BETA_INCREMENT = 0.0019984316362548897  # From Optuna study
+
+# Reward normalization parameters
+REWARD_SCALING = 1.0
+REWARD_CLIP = 10.0
+
+class RunningMeanStd:
+    """Tracks running mean and standard deviation of rewards for normalization"""
+    def __init__(self, epsilon=1e-4, shape=()):
+        self.mean = np.zeros(shape, np.float64)
+        self.var = np.ones(shape, np.float64)
+        self.count = epsilon
+
+    def update(self, x):
+        batch_mean = np.mean(x, axis=0)
+        batch_var = np.var(x, axis=0)
+        batch_count = x.shape[0]
+        self.update_from_moments(batch_mean, batch_var, batch_count)
+
+    def update_from_moments(self, batch_mean, batch_var, batch_count):
+        delta = batch_mean - self.mean
+        tot_count = self.count + batch_count
+
+        new_mean = self.mean + delta * batch_count / tot_count
+        m_a = self.var * self.count
+        m_b = batch_var * batch_count
+        M2 = m_a + m_b + np.square(delta) * self.count * batch_count / tot_count
+        new_var = M2 / tot_count
+
+        self.mean = new_mean
+        self.var = new_var
+        self.count = tot_count
+
+    def normalize(self, x):
+        """Normalizes rewards using running statistics"""
+        std = np.sqrt(self.var)
+        return np.clip((x - self.mean) / (std + 1e-8), -REWARD_CLIP, REWARD_CLIP)
 
 Transition = namedtuple('Transition', ('state', 'action', 'reward', 'next_state', 'done', 'priority'))
 
@@ -235,14 +276,42 @@ class PrioritizedReplayBuffer:
         if len(self.buffer) < batch_size:
             return None
 
-        probs = self.priorities[:len(self.buffer)] ** ALPHA
-        probs /= probs.sum()
+        # Get priorities and handle NaN/inf values
+        priorities = self.priorities[:len(self.buffer)]
+        
+        # Replace NaN and inf values with small positive number
+        priorities = np.where(np.isfinite(priorities), priorities, 1e-8)
+        priorities = np.maximum(priorities, 1e-8)  # Ensure all priorities are positive
+        
+        probs = priorities ** ALPHA
+        
+        # Normalize probabilities and handle edge cases
+        prob_sum = probs.sum()
+        if prob_sum <= 0 or not np.isfinite(prob_sum):
+            # Fallback to uniform sampling if probabilities are invalid
+            probs = np.ones_like(probs) / len(probs)
+        else:
+            probs /= prob_sum
+        
+        # Final safety check
+        probs = np.where(np.isfinite(probs), probs, 1.0 / len(probs))
+        probs /= probs.sum()  # Renormalize
 
         indices = np.random.choice(len(self.buffer), batch_size, p=probs)
         samples = [self.buffer[idx] for idx in indices]
 
-        weights = (len(self.buffer) * probs[indices]) ** (-beta)
-        weights /= weights.max()
+        # Calculate importance sampling weights with safety checks
+        selected_probs = probs[indices]
+        weights = (len(self.buffer) * selected_probs) ** (-beta)
+        
+        # Handle potential NaN/inf in weights
+        weights = np.where(np.isfinite(weights), weights, 1.0)
+        max_weight = weights.max()
+        if max_weight <= 0 or not np.isfinite(max_weight):
+            weights = np.ones_like(weights)
+        else:
+            weights /= max_weight
+            
         weights = torch.FloatTensor(weights).to(device)
 
         # Convert dictionary observations to tensors with consistent shapes
@@ -264,7 +333,12 @@ class PrioritizedReplayBuffer:
 
     def update_priorities(self, indices: List[int], priorities: np.ndarray):
         for idx, priority in zip(indices, priorities):
-            self.priorities[idx] = priority
+            # Ensure priority is finite and positive
+            if np.isfinite(priority) and priority > 0:
+                self.priorities[idx] = priority
+            else:
+                # Use small positive value as fallback
+                self.priorities[idx] = 1e-8
 
     def __len__(self) -> int:
         return len(self.buffer)
@@ -283,14 +357,6 @@ def project_distribution(next_dist, rewards, dones, support, delta_z, gamma):
     l = b.floor().long()
     u = b.ceil().long()
     
-    # proj_dist = torch.zeros_like(next_dist)
-    
-    # for i in range(batch_size):
-    #     for j in range(atoms):
-    #         proj_dist[i][l[i][j]] += next_dist[i][j] * (u[i][j] - b[i][j])
-    #         proj_dist[i][u[i][j]] += next_dist[i][j] * (b[i][j] - l[i][j])
-
-
     # Clamp indices to valid range [0, atoms-1] - essential for GPU/CPU consistency
     l = l.clamp(0, atoms - 1)
     u = u.clamp(0, atoms - 1)
@@ -318,7 +384,7 @@ def project_distribution(next_dist, rewards, dones, support, delta_z, gamma):
             
     return proj_dist
 
-def rollout_and_record(env, policy_net, filename="rainbow_run.mp4", max_steps=500, walls=None):
+def rollout_and_record(env, policy_net, filename="rainbow_run.mp4", max_steps=MAX_STEPS, walls=None):
     """Record a video of the agent's performance"""
     print(f"\nRecording video for {max_steps} steps...")
     obs, _ = env.reset(options={"walls": walls})
@@ -465,14 +531,21 @@ def get_log_dir(grid_size, custom_dir=None):
     if custom_dir is not None:
         log_dir = custom_dir
     else:
-        log_dir = os.path.join(BASE_LOG_DIR, f"rainbow_dqn_{grid_size[0]}x{grid_size[1]}")
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        log_dir = os.path.join(BASE_LOG_DIR, f"rainbow_dqn_{grid_size[0]}x{grid_size[1]}_{timestamp}")
     
     os.makedirs(log_dir, exist_ok=True)
     return log_dir
 
-def train(env_id: str = "Vacuum-v0", grid_size: tuple = (6, 6), total_timesteps: int = 50000, save_freq: int = 10000, walls=None, from_scratch=False, env=None, custom_log_dir=None):
+def train(env_id: str = "Vacuum-v0", grid_size: tuple = (6, 6), total_timesteps: int = MAX_TIMESTEPS, save_freq: int = 10000, walls=None, from_scratch=False, env=None, custom_log_dir=None, seed=None):
     global LOG_DIR  # Make LOG_DIR accessible globally
     LOG_DIR = get_log_dir(grid_size, custom_dir=custom_log_dir)
+    
+    # Set random seeds if provided
+    if seed is not None:
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        random.seed(seed)
     
     print_section_header("Starting Training")
     print(f"Environment: {env_id}")
@@ -480,24 +553,28 @@ def train(env_id: str = "Vacuum-v0", grid_size: tuple = (6, 6), total_timesteps:
     print(f"Wall Mode: {'hardcoded' if walls is not None else 'random'}")
     print(f"Total timesteps: {total_timesteps}")
     print(f"Saving model every {save_freq} steps")
+    print(f"Random seed: {seed}")
     
     # Initialize TensorBoard writer
     writer = SummaryWriter(os.path.join(LOG_DIR, 'tensorboard'))
     print(f"TensorBoard logs will be saved to: {os.path.join(LOG_DIR, 'tensorboard')}")
     
+    # Initialize reward normalizer
+    reward_normalizer = RunningMeanStd(shape=())
+    
     # Create environment if not provided
     if env is None:
         # Create and wrap environment with metrics and additional wrappers
         env = gym.make(env_id, grid_size=grid_size, use_counter=False, dirt_num=5)  # Add grid_size parameter
-        env = TimeLimit(env, max_episode_steps=500)
-        env = ExplorationBonusWrapper(env, bonus=0.3)
-        env = ExploitationPenaltyWrapper(env, time_penalty=-0.002, stay_penalty=-0.1)
+        env = TimeLimit(env, max_episode_steps=MAX_STEPS)
+        env = ExplorationBonusWrapper(env, bonus=0.10525612628712341)  # From Optuna study
+        env = ExploitationPenaltyWrapper(env, time_penalty=-0.0020989802390739463, stay_penalty=-0.05073560696895504)  # From Optuna study
         env = MetricWrapper(env)
     
     print("\nEnvironment Wrappers:")
-    print("- TimeLimit: 500 steps")
-    print("- ExplorationBonus: +0.3")
-    print("- ExploitationPenalty: time=-0.002, stay=-0.1")
+    print(f"- TimeLimit: {MAX_STEPS} steps")
+    print(f"- ExplorationBonus: +{0.10525612628712341}")  # From Optuna study
+    print(f"- ExploitationPenalty: time={-0.0020989802390739463}, stay={-0.05073560696895504}")  # From Optuna study
     print("- MetricWrapper: enabled")
     print("- Internal stuck counter: disabled")
     
@@ -569,10 +646,15 @@ def train(env_id: str = "Vacuum-v0", grid_size: tuple = (6, 6), total_timesteps:
         next_obs, reward, terminated, truncated, info = env.step(action)
         done = terminated or truncated
         
-        buffer.push(obs, action, reward, next_obs, done)
+        # Normalize reward
+        reward_normalizer.update(np.array([reward]))
+        normalized_reward = float(reward_normalizer.normalize(np.array([reward]))[0])
+        normalized_reward *= REWARD_SCALING
+        
+        buffer.push(obs, action, normalized_reward, next_obs, done)
         
         obs = next_obs
-        episode_reward += reward
+        episode_reward += reward  # Track original reward for logging
 
         if done:
             episode_count += 1
@@ -643,7 +725,12 @@ def train(env_id: str = "Vacuum-v0", grid_size: tuple = (6, 6), total_timesteps:
                     )
 
                 loss = -(target_q_dist * current_q_dist.log()).sum(1)
+                
+                # Convert to priorities with safety checks for NaN/inf values
                 priorities = loss.detach().cpu().numpy()
+                priorities = np.where(np.isfinite(priorities), priorities, 1e-8)
+                priorities = np.maximum(priorities, 1e-8)  # Ensure all priorities are positive
+                
                 loss = (loss * weights).mean()
                 
                 # Log training loss to TensorBoard
@@ -707,15 +794,15 @@ def evaluate(policy_net, env_id="Vacuum-v0", grid_size=(6, 6), episodes=5, rende
     if env is None:
         # Create and wrap environment with same wrappers as training
         env = gym.make(env_id, grid_size=grid_size, render_mode="plot", use_counter=False)
-        env = TimeLimit(env, max_episode_steps=500)
-        env = ExplorationBonusWrapper(env, bonus=0.3)
-        env = ExploitationPenaltyWrapper(env, time_penalty=-0.002, stay_penalty=-0.1)
+        env = TimeLimit(env, max_episode_steps=MAX_STEPS)
+        env = ExplorationBonusWrapper(env, bonus=0.10525612628712341)  # From Optuna study
+        env = ExploitationPenaltyWrapper(env, time_penalty=-0.0020989802390739463, stay_penalty=-0.05073560696895504)  # From Optuna study
         env = MetricWrapper(env)
     
     print("\nEnvironment Wrappers:")
-    print("- TimeLimit: 500 steps")
-    print("- ExplorationBonus: +0.3")
-    print("- ExploitationPenalty: time=-0.002, stay=-0.1")
+    print(f"- TimeLimit: {MAX_STEPS} steps")
+    print(f"- ExplorationBonus: +{0.10525612628712341}")  # From Optuna study
+    print(f"- ExploitationPenalty: time={-0.0020989802390739463}, stay={-0.05073560696895504}")  # From Optuna study
     print("- MetricWrapper: enabled")
     print("- Internal stuck counter: disabled")
     
@@ -799,7 +886,7 @@ if __name__ == "__main__":
                       help='Whether to train a new model or evaluate an existing one')
     parser.add_argument('--model_path', type=str, default='best_model.pth',
                       help='Path to model file for evaluation (relative to LOG_DIR)')
-    parser.add_argument('--timesteps', type=int, default=50000,
+    parser.add_argument('--timesteps', type=int, default=MAX_TIMESTEPS,
                       help='Number of timesteps to train for')
     parser.add_argument('--eval_episodes', type=int, default=5,
                       help='Number of episodes to evaluate for')
@@ -809,6 +896,8 @@ if __name__ == "__main__":
                       help='Wall layout: "random" or "hardcoded" (only applies to 40x30 grid)')
     parser.add_argument('--from_scratch', action='store_true',
                       help='Start training from scratch, ignoring any existing checkpoints')
+    parser.add_argument('--seed', type=int, default=None,
+                      help='Random seed for reproducibility')
     args = parser.parse_args()
 
     grid_size = tuple(args.grid_size)
@@ -822,7 +911,8 @@ if __name__ == "__main__":
 
     if args.mode == 'train':
         # Train a new model
-        model = train(total_timesteps=args.timesteps, grid_size=grid_size, walls=walls, from_scratch=args.from_scratch)
+        model = train(total_timesteps=args.timesteps, grid_size=grid_size, walls=walls, 
+                     from_scratch=args.from_scratch, seed=args.seed)
         # Evaluate the trained model
         evaluate(model, grid_size=grid_size, episodes=args.eval_episodes, walls=walls)
     else:
