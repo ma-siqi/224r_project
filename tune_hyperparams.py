@@ -29,7 +29,7 @@ register(
 # --------------------------------------
 # Make monitored, wrapped environment
 # --------------------------------------
-def make_env(grid_size=(20, 20), use_layout=False, max_steps=3000, dirt_num=5, algo='ppo', wall_mode="random"):
+def make_env(grid_size=(20, 20), max_steps=3000, dirt_num=5, algo='ppo', wall_mode="random"):
     if wall_mode == "hardcoded":
         walls = generate_1b1b_layout_grid()
     elif wall_mode == "none":
@@ -38,7 +38,7 @@ def make_env(grid_size=(20, 20), use_layout=False, max_steps=3000, dirt_num=5, a
         walls = []
     train_factory = WrappedVacuumEnv(grid_size, dirt_num, max_steps, algo=algo, walls=walls)
     train_env = DummyVecEnv([train_factory])
-    train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True)
+    train_env = VecNormalize(train_env, norm_obs=False, norm_reward=True)
 
     return train_env
 
@@ -92,7 +92,6 @@ def ppo_objective(trial):
     model = PPO("MlpPolicy", train_env, verbose=0, **params)
     model.learn(total_timesteps=100_000)
 
-    eval_env.obs_rms = train_env.obs_rms
     eval_env.ret_rms = train_env.ret_rms
     eval_env.training = False
     eval_env.norm_reward = False
@@ -131,7 +130,6 @@ def dqn_objective(trial):
 
     model = DQN("MlpPolicy", train_env, verbose=0, **params)
     model.learn(total_timesteps=100_000)
-    eval_env.obs_rms = train_env.obs_rms
     eval_env.ret_rms = train_env.ret_rms
     eval_env.training = False
     eval_env.norm_reward = False
@@ -147,7 +145,7 @@ if __name__ == "__main__":
     n_trials = 30
 
     print(f"Tuning {algo.upper()} with Optuna ({n_trials} trials)...")
-    study = optuna.create_study(direction="maximize", pruner=optuna.pruners.MedianPruner())
+    study = optuna.create_study(direction="maximize", pruner=optuna.pruners.MedianPruner(n_warmup_steps=10))
 
     if algo == "ppo":
         study.optimize(ppo_objective, n_trials=n_trials)

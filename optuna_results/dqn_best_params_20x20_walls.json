@@ -1,0 +1,9 @@
+{
+    "learning_rate": 0.0001823320890867631,
+    "buffer_size": 200000,
+    "batch_size": 64,
+    "exploration_fraction": 0.3254497326697572,
+    "exploration_initial_eps": 0.8319532357916214,
+    "exploration_final_eps": 0.06133059411329741,
+    "gamma": 0.9949248156417173
+}

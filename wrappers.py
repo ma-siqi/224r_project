@@ -28,8 +28,6 @@ class ExplorationBonusWrapper(gym.Wrapper):
         if self.visit_map[pos] < 1e-3:
             reward += self.bonus
 
-        reward += max(0, self.bonus * (0.3 - self.visit_map[pos]))
-
         self.visit_map[pos] += 1
         return obs, reward, terminated, truncated, info
 

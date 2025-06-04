@@ -202,7 +202,6 @@ def eval_and_save(env, model, n_episodes=5, max_steps=100, walls=None,
                 obs = flatten(env.observation_space, obs)
 
         for steps in range(max_steps):
-            #frames = []
             frame = env.unwrapped.render_frame()
             if mode == "video":
                 frames.append(frame)
@@ -363,9 +362,6 @@ if __name__ == "__main__":
         base_env = train_factory.base_env
         eval_base_env = eval_factory.base_env
 
-        # reset before training
-        #obs, _ = base_env.reset(options={"walls": walls})
-        #obs, _ = eval_base_env.reset(options={"walls": walls})
         eval_callback = EvalCallback(
             eval_env,
             best_model_save_path="./logs/ppo/models/",
@@ -461,15 +457,18 @@ if __name__ == "__main__":
         eval_env.training = False
         eval_env.norm_reward = False
 
+        # Load the best model
+        model = DQN.load("./logs/dqn/models/best_model", env=eval_env)
+
         # Save the final trajectory
         print("Saving DQN training trajectory...")
-        eval_and_save(base_env, model, n_episodes=10, max_steps=500, walls=walls, dir_name="./logs/dqn", algo='dqn',
+        eval_and_save(base_env, model, n_episodes=10, max_steps=3000, walls=walls, dir_name="./logs/dqn", algo='dqn',
                       name='train', mode="video")
 
         # Save best eval trajectory
         print("Saving DQN eval trajectory...")
-        eval_and_save(eval_base_env, model, n_episodes=10, max_steps=500, walls=eval_walls, dir_name="./logs/dqn",
-                      algo='dqn', name='eval', mode="video")
+        eval_and_save(eval_base_env, model, n_episodes=10, max_steps=3000, walls=eval_walls, dir_name="./logs/dqn",
+                      algo='dqn', name='eval')
 
     elif algo == "her":
         # -----------------------------------------------

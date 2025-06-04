@@ -47,9 +47,7 @@ class VacuumEnv(gym.Env):
             "agent_pos": spaces.MultiDiscrete([self.grid_size[0], self.grid_size[1]]),
             "agent_orient": spaces.Box(low=0, high=7, shape=(1,), dtype=np.uint8),
             "local_view": spaces.MultiBinary(3),
-            "cleaned_map": spaces.Box(low=0, high=1, shape=self.grid_size, dtype=np.uint8),
-            "dirt_map": spaces.Box(low=0, high=1, shape=self.grid_size, dtype=np.uint8),
-            "path_map": spaces.Box(low=0, high=1, shape=self.grid_size, dtype=np.uint8),
+            "state_map": spaces.Box(low=-1, high=10000, shape=self.grid_size, dtype=np.int32)
         })
 
         self.orientations = {
@@ -180,13 +178,15 @@ class VacuumEnv(gym.Env):
         left = self._check_cell_in_direction((self.agent_orient - 2) % 8)
         right = self._check_cell_in_direction((self.agent_orient + 2) % 8)
 
+        combined_map = self.path_map.astype(np.int32)
+        combined_map[self.cleaned_map == 1] = 0
+        combined_map[self.dirt_map == 1] = -1
+
         return {
             "agent_pos": np.array(self.agent_pos, dtype=np.int32),             # shape: (2,)
             "agent_orient": np.array([self.agent_orient], dtype=np.uint8),    # shape: (1,)
             "local_view": np.array([front, left, right], dtype=np.int8),     # shape: (3,)
-            "cleaned_map": self.cleaned_map.astype(np.uint8),                 # shape: (H, W)
-            "dirt_map": self.dirt_map.astype(np.uint8),                       # shape: (H, W)
-            "path_map": self.path_map.astype(np.uint8),                       # shape: (H, W)
+            "state_map": np.array(combined_map, dtype=np.int32)                     # shape: (H, W), dtype: int32
         }
 
     def _check_cell_in_direction(self, direction):
