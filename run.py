@@ -195,13 +195,14 @@ def eval_and_save(env, model, n_episodes=5, max_steps=100, walls=None,
         last_frame = None
         episode_reward = 0
         steps = 0
+        frames = []
 
         if isinstance(obs, dict):
             if algo == 'dqn':
                 obs = flatten(env.observation_space, obs)
 
         for steps in range(max_steps):
-            frames = []
+            #frames = []
             frame = env.unwrapped.render_frame()
             if mode == "video":
                 frames.append(frame)
@@ -290,7 +291,7 @@ if __name__ == "__main__":
                         help="Grid size as two integers (e.g., 40 30)")
     parser.add_argument("--wall_mode", choices=["random", "hardcoded", "none"], default="random",
                         help="Wall layout: 'none', 'random' or 'hardcoded' (only applies to 40x30)")
-    parser.add_argument("--dirt_num", type=float, default=5,
+    parser.add_argument("--dirt_num", type=float, default=0,
                         help="Number of dirt clusters; 0 for all dirty")
     args = parser.parse_args()
 
@@ -312,7 +313,7 @@ if __name__ == "__main__":
         eval_walls = None
 
     # Load best hyperparameters if available
-    param_path = Path(f"optuna_results/dirt_num_5/{algo}_best_params.json")
+    param_path = Path(f"optuna_results/{algo}_best_params.json")
     if param_path.exists():
         with open(param_path, "r") as f:
             best_params = json.load(f)
@@ -426,6 +427,16 @@ if __name__ == "__main__":
         base_env = train_factory.base_env
         eval_base_env = eval_factory.base_env
 
+        eval_callback = EvalCallback(
+            eval_env,
+            best_model_save_path="./logs/dqn/models/",
+            log_path="./logs/dqn/",
+            eval_freq=10000,  # Evaluate every N steps
+            deterministic=True,
+            render=False,
+            n_eval_episodes=10,  # Evaluate using multiple episodes
+        )
+
         check_env(base_env, warn=True)
         check_env(eval_base_env, warn=True)
 
@@ -439,7 +450,7 @@ if __name__ == "__main__":
 
         model.learn(
             total_timesteps=total_timesteps,
-            callback=MetricCallback(),
+            callback=[eval_callback, MetricCallback()],
         )
 
         # Save VecNormalize stats
@@ -452,17 +463,14 @@ if __name__ == "__main__":
 
         # Save the final trajectory
         print("Saving DQN training trajectory...")
-        rollout_and_save_last_frame(base_env, model, filename="dqn_train.png", max_steps=3000, walls=walls, dir_name="./logs/dqn", algo='dqn')
+        eval_and_save(base_env, model, n_episodes=10, max_steps=500, walls=walls, dir_name="./logs/dqn", algo='dqn',
+                      name='train', mode="video")
 
         # Save best eval trajectory
         print("Saving DQN eval trajectory...")
-        rollout_and_save_last_frame(eval_base_env, model, filename="dqn_eval.png", max_steps=3000, walls=eval_walls, dir_name = "./logs/dqn", algo='dqn')
-        #rollout_and_record(eval_env, model, filename="ppo_eval.mp4", max_steps=3000, walls=eval_walls)
+        eval_and_save(eval_base_env, model, n_episodes=10, max_steps=500, walls=eval_walls, dir_name="./logs/dqn",
+                      algo='dqn', name='eval', mode="video")
 
-        # Save to file with summary
-        metrics = evaluate_vec_model(model, eval_env, n_episodes=20)
-        save_metrics_with_summary(metrics, output_path="./logs/dqn/evaluation_metrics.json")
-    
     elif algo == "her":
         # -----------------------------------------------
         # DQN with HER Training with wrappers and Monitor

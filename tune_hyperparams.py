@@ -8,11 +8,13 @@ from stable_baselines3.common.monitor import Monitor
 from env import VacuumEnv, WrappedVacuumEnv
 from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
-from run import generate_1b1b_layout_grid, rollout_and_record
+from run import generate_1b1b_layout_grid
 
 import optuna
 import json
 import os
+import numpy as np
+import torch
 
 # --------------------------------------
 # Register the vacuum environment
@@ -34,7 +36,7 @@ def make_env(grid_size=(20, 20), use_layout=False, max_steps=3000, dirt_num=5, a
         walls = None
     else:
         walls = []
-    train_factory = WrappedVacuumEnv(grid_size, dirt_num, max_steps, algo='ppo', walls=walls)
+    train_factory = WrappedVacuumEnv(grid_size, dirt_num, max_steps, algo=algo, walls=walls)
     train_env = DummyVecEnv([train_factory])
     train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True)
 
@@ -55,10 +57,10 @@ dqn_search_space = {
     "learning_rate": (1e-5, 1e-3, "log"),
     "buffer_size": [50_000, 100_000, 200_000], # size of replay buffer
     "batch_size": [32, 64, 128], # number of samples per training step
-    "exploration_fraction": (0.05, 0.3, "float"), # fraction of total training steps over which exploration decreases
+    "exploration_fraction": (0.3, 0.5, "float"), # fraction of total training steps over which exploration decreases
     "exploration_initial_eps": (0.8, 1.0, "float"), # initial exploration probability
     "exploration_final_eps": (0.01, 0.1, "float"), # final exploration probability
-    "gamma": (0.90, 0.999, "float"),
+    "gamma": (0.98, 0.999, "float"),
 }
 
 # --------------------------------------
@@ -67,6 +69,12 @@ dqn_search_space = {
 def ppo_objective(trial):
     train_env = make_env(algo='ppo')
     eval_env = make_env(algo='ppo')
+
+    seed = trial.number
+    train_env.seed(seed)
+    eval_env.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
     lr_low, lr_high, lr_scale = ppo_search_space["learning_rate"]
     ent_low, ent_high, ent_scale = ppo_search_space["ent_coef"]
@@ -89,12 +97,18 @@ def ppo_objective(trial):
     eval_env.training = False
     eval_env.norm_reward = False
 
-    mean_reward, _ = evaluate_policy(model, eval_env, n_eval_episodes=5, deterministic=True)
+    mean_reward, _ = evaluate_policy(model, eval_env, n_eval_episodes=10, deterministic=True)
     return mean_reward
 
 def dqn_objective(trial):
     train_env = make_env(algo='dqn')
     eval_env = make_env(algo='dqn')
+
+    seed = trial.number
+    train_env.seed(seed)
+    eval_env.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
 
     lr_low, lr_high, lr_scale = dqn_search_space["learning_rate"]
     exploration_frac_low, exploration_frac_high, _ = dqn_search_space["exploration_fraction"]
@@ -122,18 +136,18 @@ def dqn_objective(trial):
     eval_env.training = False
     eval_env.norm_reward = False
 
-    mean_reward, _ = evaluate_policy(model, eval_env, n_eval_episodes=5, deterministic=True)
+    mean_reward, _ = evaluate_policy(model, eval_env, n_eval_episodes=10, deterministic=True)
     return mean_reward
 
 # --------------------------------------
 # Run tuning and retrain best
 # --------------------------------------
 if __name__ == "__main__":
-    algo = "ppo"  # or "dqn"
-    n_trials = 50
+    algo = "dqn"  # or "dqn"
+    n_trials = 30
 
     print(f"Tuning {algo.upper()} with Optuna ({n_trials} trials)...")
-    study = optuna.create_study(direction="maximize")
+    study = optuna.create_study(direction="maximize", pruner=optuna.pruners.MedianPruner())
 
     if algo == "ppo":
         study.optimize(ppo_objective, n_trials=n_trials)
@@ -143,7 +157,7 @@ if __name__ == "__main__":
     print("\nBest Trial:")
     print(study.best_trial)
 
-    save_dir = "optuna_results/dirt_num_5"
+    save_dir = "optuna_results"
     os.makedirs(save_dir, exist_ok=True)
 
     best_param_path = os.path.join(save_dir, f"{algo}_best_params.json")

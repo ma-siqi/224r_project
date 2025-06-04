@@ -1,9 +1,9 @@
 {
-    "learning_rate": 1.529579319692868e-05,
+    "learning_rate": 8.942744249165615e-05,
     "buffer_size": 50000,
-    "batch_size": 64,
-    "exploration_fraction": 0.27940848615312797,
-    "exploration_initial_eps": 0.8374630598070029,
-    "exploration_final_eps": 0.09298478193035119,
-    "gamma": 0.9657632681135366
+    "batch_size": 32,
+    "exploration_fraction": 0.21073842989551606,
+    "exploration_initial_eps": 0.8582122814758142,
+    "exploration_final_eps": 0.0704102717415495,
+    "gamma": 0.9486043367115881
 }
