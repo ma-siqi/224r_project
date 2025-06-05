@@ -22,14 +22,13 @@ import torch
 register(
     id="VacuumEnv-v0",
     entry_point="env:VacuumEnv",
-    kwargs={"grid_size": (20, 20),
-    "render_mode": "plot"},
+    kwargs={"grid_size": (20, 20)},
 )
 
 # --------------------------------------
 # Make monitored, wrapped environment
 # --------------------------------------
-def make_env(grid_size=(20, 20), max_steps=3000, dirt_num=5, algo='ppo', wall_mode="random"):
+def make_env(grid_size=(20, 20), max_steps=3000, dirt_num=5, algo='ppo', wall_mode=""):
     if wall_mode == "hardcoded":
         walls = generate_1b1b_layout_grid()
     elif wall_mode == "none":

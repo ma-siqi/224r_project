@@ -9,8 +9,8 @@ import os
 from env import VacuumEnv
 from eval import evaluate_random_agent_steps, RandomAgent
 from eval import export_random_metrics
-from eval import evaluate_model, save_metrics_with_summary, evaluate_vec_model
-from eval import MetricWrapper, MetricCallback, compute_coverage_ratio, compute_redundancy_rate, compute_revisit_ratio
+from eval import evaluate_model, save_metrics_with_summary
+from eval import MetricWrapper, MetricCallback
 from env import WrappedVacuumEnv
 
 import numpy as np
@@ -37,8 +37,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 register(
     id="VacuumEnv-v0",
     entry_point="env:VacuumEnv",
-    kwargs={"grid_size": (20, 20), 
-    "render_mode": "plot"},
+    kwargs={"grid_size": (20, 20)},
 )
 
 # --------------------------------------
@@ -218,13 +217,10 @@ def eval_and_save(env, model, n_episodes=5, max_steps=100, walls=None,
             if terminated or truncated:
                 break
 
-        metrics = {
-            "episode_length": steps + 1,
-            "episode_reward": episode_reward,
-            "coverage_ratio": compute_coverage_ratio(env.unwrapped),
-            "revisit_ratio": compute_revisit_ratio(env.unwrapped),
-            "redundancy_ratio": compute_redundancy_rate(env.unwrapped)
-        }
+        metrics = env.unwrapped.compute_metrics()
+
+        metrics["episode_length"] = steps + 1
+        metrics["episode_reward"] = episode_reward
 
         all_metrics.append(metrics)
 
@@ -325,7 +321,7 @@ if __name__ == "__main__":
         # ---------------
         max_steps = 3000
 
-        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, render_mode="plot", dirt_num=dirt_num)
+        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, dirt_num=dirt_num)
         base_env = TimeLimit(base_env, max_episode_steps=max_steps)
         base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
         base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
@@ -391,6 +387,7 @@ if __name__ == "__main__":
 
         # Save VecNormalize stats
         train_env.save("logs/ppo/vec_normalize.pkl")
+        model = PPO.load("./logs/ppo/models/best_model", env=eval_env)
 
         # Load stats into eval env
         eval_env = VecNormalize.load("logs/ppo/vec_normalize.pkl", eval_env)
@@ -398,12 +395,13 @@ if __name__ == "__main__":
         eval_env.norm_reward = False
 
         # Save the final trajectory
-        print("Saving PPO training trajectory...")
-        eval_and_save(base_env, model, n_episodes=10, max_steps=100, walls=walls, dir_name="./logs/ppo", algo='ppo', name='train')
+        #print("Saving PPO training trajectory...")
+        #eval_and_save(base_env, model, n_episodes=1, max_steps=100, walls=walls, dir_name="./logs/ppo", algo='ppo', name='train')
 
         # Save best eval trajectory
         print("Saving PPO eval trajectory...")
-        eval_and_save(eval_base_env, model, n_episodes=10, max_steps=100, walls=eval_walls, dir_name = "./logs/ppo", algo='ppo', name='eval')
+        eval_and_save(eval_base_env, model, n_episodes=5, max_steps=3000, walls=eval_walls, dir_name = "./logs/ppo", 
+                      algo='ppo', name='eval', mode = "video")
         #rollout_and_record(eval_env, model, filename="ppo_eval.mp4", max_steps=3000, walls=eval_walls)
 
     elif algo == "dqn":
@@ -466,9 +464,9 @@ if __name__ == "__main__":
                       name='train', mode="video")
 
         # Save best eval trajectory
-        print("Saving DQN eval trajectory...")
-        eval_and_save(eval_base_env, model, n_episodes=10, max_steps=3000, walls=eval_walls, dir_name="./logs/dqn",
-                      algo='dqn', name='eval')
+        #print("Saving DQN eval trajectory...")
+        #eval_and_save(eval_base_env, model, n_episodes=1, max_steps=3000, walls=eval_walls, dir_name="./logs/dqn",
+        #              algo='dqn', name='eval')
 
     elif algo == "her":
         # -----------------------------------------------

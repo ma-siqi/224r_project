@@ -97,32 +97,6 @@ class MetricCallback(BaseCallback):
         plt.savefig(os.path.join(self.log_dir, "training_metrics.png"))
         plt.close()
 
-def compute_coverage_ratio(env):
-    total_dirt = np.sum(env.dirt_map == 1) + np.sum(env.cleaned_map == 1)
-    cleaned = np.sum(env.cleaned_map == 1)
-    return cleaned / total_dirt if total_dirt > 0 else 0
-
-def compute_redundancy_rate(env):
-    path_visits = env.path_map[env.obstacle_map == 0]
-    return np.mean(path_visits) if path_visits.size > 0 else 0
-
-def compute_revisit_ratio(env):
-    """Calculate the ratio of revisits to total steps.
-    A revisit is counted when a cell is visited more than once."""
-    # Convert to float64 to avoid overflow
-    path_map = env.path_map.astype(np.float64) if hasattr(env, 'path_map') else env.unwrapped.path_map.astype(np.float64)
-    total_steps = np.sum(path_map)
-    
-    if total_steps == 0:
-        return 0.0
-    
-    # Calculate total revisits
-    # For each cell, count how many times it was visited beyond the first visit
-    revisits = np.sum(np.maximum(path_map - 1, 0))
-    
-    # Revisit ratio is the number of revisit steps divided by total steps
-    return revisits / total_steps
-
 class MetricWrapper(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
@@ -138,20 +112,11 @@ class MetricWrapper(gym.Wrapper):
         obs, reward, terminated, truncated, info = self.env.step(action)
 
         if terminated or truncated:
-            # Get the path_map from the base environment
-            path_map = self.base_env.path_map
-            info["path_map"] = path_map  # Add path_map to info
-            
             # Compute metrics
-            self.metrics['coverage_ratio'] = compute_coverage_ratio(self.base_env)
-            self.metrics['path_efficiency'] = compute_redundancy_rate(self.base_env)
-            self.metrics['revisit_ratio'] = compute_revisit_ratio(self.base_env)
+            self.metrics = self.base_env.compute_metrics()
             info.update(self.metrics)
 
         return obs, reward, terminated, truncated, info
-
-    def compute_reward(self, achieved_goal, desired_goal, info):
-        return self.env.compute_reward(achieved_goal, desired_goal, info)
 
 def evaluate_model(model, env, n_episodes=10, render=False) -> Dict[str, List[float]]:
     """
@@ -223,68 +188,6 @@ def save_metrics_with_summary(metrics, output_path):
         json.dump(result, f, indent=4)
 
     print(f"Metrics saved to {output_path}")
-
-def evaluate_vec_model(model, env, n_episodes=10, render=False) -> Dict[str, List[float]]:
-    """
-    Evaluate a trained model and return detailed metrics.
-    Works with VecNormalize + DummyVecEnv.
-    """
-    metrics = {
-        "episode_rewards": [],
-        "episode_lengths": [],
-        "coverage_ratio": [],
-        "path_efficiency": [],
-        "revisit_ratio": [],
-        "cleaning_time": []
-    }
-
-    for episode in range(n_episodes):
-        obs = env.reset()
-        if isinstance(obs, tuple):
-            obs = obs[0]  # remove info if present
-
-        done = False
-        episode_reward = 0
-        episode_length = 0
-
-        while not done:
-            action, _ = model.predict(obs, deterministic=True)
-
-            obs, reward, done, info = env.step([action])
-
-            # Unpack from VecEnv (batched)
-            obs = obs[0]
-            reward = reward[0]
-            done = done[0]
-            info = info[0]
-
-            episode_reward += reward
-            episode_length += 1
-
-            if done:
-                metrics["episode_rewards"].append(episode_reward)
-                metrics["episode_lengths"].append(episode_length)
-                metrics["coverage_ratio"].append(info.get("coverage_ratio", 0))
-                metrics["path_efficiency"].append(info.get("path_efficiency", 0))
-                metrics["revisit_ratio"].append(info.get("revisit_ratio", 0))
-                if "cleaning_time" in info:
-                    metrics["cleaning_time"].append(info["cleaning_time"])
-
-                is_truncated = info.get("TimeLimit.truncated", False)
-                print(f"Episode done. Truncated: {is_truncated}")
-
-                print(f"Episode {episode + 1}")
-                print(f"Reward: {episode_reward:.2f}")
-                print(f"Length: {episode_length}")
-                print(f"Coverage: {info.get('coverage_ratio', 0):.2%}")
-                print(f"Path Efficiency: {info.get('path_efficiency', 0):.2f}")
-                print(f"Revisit Ratio: {info.get('revisit_ratio', 0):.2f}")
-                if "cleaning_time" in info:
-                    print(f"Cleaning Time: {info['cleaning_time']}")
-                print("---")
-
-    return metrics
-
 
 class RandomAgent:
     """Simple random agent for baseline comparison"""

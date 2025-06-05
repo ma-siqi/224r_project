@@ -6,63 +6,76 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
 from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper
-from her import VacuumGoalWrapper, HerReplayBufferForDQN
-from eval import MetricWrapper, MetricCallback
 from gymnasium.wrappers import FlattenObservation
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from stable_baselines3.common.monitor import Monitor
+from eval import MetricWrapper
+
+DIRECTIONS = np.array([
+    (0, -1),   # 0: N
+    (1, -1),   # 1: NE
+    (1, 0),    # 2: E
+    (1, 1),    # 3: SE
+    (0, 1),    # 4: S
+    (-1, 1),   # 5: SW
+    (-1, 0),   # 6: W
+    (-1, -1)   # 7: NW
+])
+
 
 class VacuumEnv(gym.Env):
-    metadata = {"render_modes": ["human", "plot"]}
 
     def __init__(
         self,
         grid_size=(6, 6),
         reward_clean_tile=1.0,
-        penalty_revisit=-0.5,
-        penalty_forward=-0.1,
-        penalty_rotation=-0.05,
-        penalty_invalid_move=-1.0,
-        reward_return_home=10000.0,
-        penalty_delay_return=-0.05,
-        dirt_num=5,
-        render_mode=None,
-        use_counter=True
+        penalty_forward=-0.05,
+        penalty_rotation=-0.01,
+        penalty_invalid_move=-0.1,
+        reward_done_clean=10_000.0,
+        reward_return_home=10_000.0,
+        dirt_num=5
     ):
         super().__init__()
         self.grid_size = grid_size
-
         self.reward_clean_tile = reward_clean_tile
-        self.penalty_revisit = penalty_revisit
         self.penalty_forward = penalty_forward
         self.penalty_rotation = penalty_rotation
         self.penalty_invalid_move = penalty_invalid_move
+        self.reward_done_clean = reward_done_clean
         self.reward_return_home = reward_return_home
-        self.penalty_delay_return = penalty_delay_return
-        self.use_internal_stuck_penalty = use_counter  # default to using counter to penalize being stuck; disable when using wrappers
 
         self.action_space = spaces.Discrete(3) # 0=forward, 1=rotate left, 2=rotate right
 
+        # -128 for unknown, -2 for obstacle, -1 for dirt, 0 for clean, positive for number of visits
         self.observation_space = spaces.Dict({
-            "agent_pos": spaces.MultiDiscrete([self.grid_size[0], self.grid_size[1]]),
+            "start_pos": spaces.MultiDiscrete([self.grid_size[0], self.grid_size[1]], dtype=np.int32), # starting position
+            "agent_pos": spaces.MultiDiscrete([self.grid_size[0], self.grid_size[1]], dtype=np.int32),
             "agent_orient": spaces.Box(low=0, high=7, shape=(1,), dtype=np.uint8),
-            "local_view": spaces.MultiBinary(3),
-            "state_map": spaces.Box(low=-1, high=10000, shape=self.grid_size, dtype=np.int32)
+            "local_view": spaces.Box(low=-2, high=1, shape=(8,), dtype=np.int8), # local observation of grids
+            "state_map": spaces.Box(low=-2, high=1, shape=self.grid_size, dtype=np.int8) 
         })
 
         self.orientations = {
             0: (-1, 0), 1: (-1, 1), 2: (0, 1), 3: (1, 1),
             4: (1, 0), 5: (1, -1), 6: (0, -1), 7: (-1, -1)
-        } # define the 8 directions
+        } # define the 8 directions clockwise
+
+        self.dirt_num = dirt_num # ratio of dirty tiles
+        self.rng = np.random.default_rng()  # used to generate random layouts
 
         self.start_pos = [0, 0] # agent starting position is the upper-left corner
-        self.dirt_num = dirt_num # ratio of dirty tiles
+        self.agent_pos = self.start_pos.copy()
+        self.agent_orient = 0
+        self.cleaned_map = np.zeros(self.grid_size, dtype=np.uint8)
+        self.dirt_map = np.zeros(self.grid_size, dtype=np.uint8)
+        self.obstacle_map = np.zeros(self.grid_size, dtype=np.uint8)
+        self.state_map = np.zeros(self.grid_size, dtype=np.uint8)
+        self.path_map = np.zeros(self.grid_size, dtype=np.uint8)
 
-        self.rng = np.random.default_rng()  # used to generate random layouts
-        self.render_mode = render_mode
         self.reset() # reset the environment when initialized
 
     def reset(self, *, seed=None, options=None):
+
         super().reset(seed=seed)
         if seed is not None:
             self.rng = np.random.default_rng(seed)
@@ -75,7 +88,6 @@ class VacuumEnv(gym.Env):
         walls = options.get("walls") if options else None
         if walls is None:
             pass
-            #self.generate_random_rooms()
         elif isinstance(walls, list) and len(walls) > 0:
             self.add_wall(walls)
         else:
@@ -88,19 +100,28 @@ class VacuumEnv(gym.Env):
         else:
             self.generate_random_dirt_clusters(self.dirt_num)
 
+        # initialize agent obserations
+        self.start_pos = [0, 0]
         self.agent_pos = list(self.start_pos)
         self.agent_orient = 2 # agent starting orientation is facing right
+        self.local_view = np.ones((8,), dtype=np.int8)
+        self.state_map = np.ones(self.grid_size, dtype=np.int8) # set the state_map to be unknown
+
+        # set dirt to be known
+        self.state_map[self.dirt_map == 1] = -1
+
+        # change the value for first grid
+        if self.dirt_map[tuple(self.agent_pos)] == 1:
+            self.state_map[tuple(self.agent_pos)] = 0
+        else:
+            self.state_map[tuple(self.agent_pos)] = 1
         self.cleaned_map[tuple(self.agent_pos)] = 1
         self.dirt_map[tuple(self.agent_pos)] = 0
 
         # store rendered path
         self.path_map = np.zeros(self.grid_size, dtype=np.uint8)
         self.path_map[tuple(self.agent_pos)] = 1  # mark the starting position
-
-        # counter used in internal penalty to avoid being stuck or wrappers
-        self.prev_pos = list(self.agent_pos)
-        self.stay_counter = 0
-
+        
         return self._get_obs(), {}
 
     def generate_random_rooms(self):
@@ -174,38 +195,44 @@ class VacuumEnv(gym.Env):
 
     def _get_obs(self):
         """Return structured observation (flattened later by FlattenObservation)"""
-        front = self._check_cell_in_direction(self.agent_orient)
-        left = self._check_cell_in_direction((self.agent_orient - 2) % 8)
-        right = self._check_cell_in_direction((self.agent_orient + 2) % 8)
-
-        combined_map = self.path_map.astype(np.int32)
-        combined_map[self.cleaned_map == 1] = 0
-        combined_map[self.dirt_map == 1] = -1
-
         return {
+            "start_pos": np.array(self.start_pos, dtype=np.int32),
             "agent_pos": np.array(self.agent_pos, dtype=np.int32),             # shape: (2,)
             "agent_orient": np.array([self.agent_orient], dtype=np.uint8),    # shape: (1,)
-            "local_view": np.array([front, left, right], dtype=np.int8),     # shape: (3,)
-            "state_map": np.array(combined_map, dtype=np.int32)                     # shape: (H, W), dtype: int32
+            "local_view": np.array(self.local_view, dtype=np.int8),     # shape: (8,)
+            "state_map": np.array(self.state_map, dtype=np.int8)    # shape: (H, W), dtype: int32
         }
 
-    def _check_cell_in_direction(self, direction):
-        """Check the dirt map in a specific direction"""
-        dx, dy = self.orientations[direction]
-        x, y = self.agent_pos[0] + dx, self.agent_pos[1] + dy
-        if (
-            0 <= x < self.grid_size[0]
-            and 0 <= y < self.grid_size[1]
-            and self.obstacle_map[x, y] == 0
-        ):
-            return 1 if self.dirt_map[x, y] > 0 else 0
-        return 0
+    def _check_cell_in_direction(self, x, y):
+        """Check the environment map at [x, y]"""
+        # Return -2 if obstacle, -1 if dirty, 0 if clean
+        if (0 <= x < self.grid_size[0] and 0 <= y < self.grid_size[1]):
+            if self.obstacle_map[x, y] == 1:
+                return -2
+            elif self.dirt_map[x, y] == 1:
+                return -1
+            else:
+                return 0
+        else:
+            return -2
+        
+    def _update_local_view(self):
+        rotated_dirs = np.roll(DIRECTIONS, -self.agent_orient, axis=0)
+        updated_state_map = []
+        for i in range(8):
+            x, y = self.agent_pos + rotated_dirs[i]
+            state = self._check_cell_in_direction(x, y)
+            self.local_view[i] = state
+            updated_state_map.append((x, y, state))
+        return updated_state_map
 
     def step(self, action):
         """Take a step in the environment"""
         reward = 0
-        moved = False
+        terminated = False
+        truncated = False
 
+        # take action
         if action == 0:  # move forward
             dx, dy = self.orientations[self.agent_orient]
             nx, ny = self.agent_pos[0] + dx, self.agent_pos[1] + dy
@@ -215,7 +242,6 @@ class VacuumEnv(gym.Env):
                 and self.obstacle_map[nx, ny] == 0
             ):
                 self.agent_pos = [nx, ny]
-                moved = True
                 reward += self.penalty_forward # forward movement cost
             else:
                 reward += self.penalty_invalid_move # invalid move (out-of-bounds or run into obstacles)
@@ -226,115 +252,38 @@ class VacuumEnv(gym.Env):
             self.agent_orient = (self.agent_orient + 1) % 8
             reward += self.penalty_rotation # rotation cost
 
-        if not hasattr(self, 'prev_dirty_count'):
-            self.prev_dirty_count = np.sum(self.dirt_map == 1)
-
         x, y = self.agent_pos
-        if moved:
-            # count visits to each cell
-            max_visits = 10000
-            self.path_map[tuple(self.agent_pos)] = min(self.path_map[tuple(self.agent_pos)] + 1, max_visits)
-            # update dirt and cleaned maps
-            if self.dirt_map[x, y] == 1:
-                reward += self.reward_clean_tile
-                self.dirt_map[x, y] = 0
-                self.cleaned_map[x, y] = 1
-            else:
-                visits = self.path_map[x, y]
-                revisit_penalty = self.penalty_revisit * visits
-                reward += revisit_penalty # revisiting a cleaned tile penalty scaled by number of visits
 
-        current_dirty_count = np.sum(self.dirt_map == 1)
-        progress = self.prev_dirty_count - current_dirty_count
-        if progress > 0:
-            reward += progress * 0.5  # Can tune this
-        self.prev_dirty_count = current_dirty_count
-
-        # track previous position
-        self.prev_pos = list(self.agent_pos)
-
-        # only apply stay penalties if enabled, if using wrappers, not enabled
-        if self.use_internal_stuck_penalty:
-            if self.agent_pos == self.prev_pos:
-                self.stay_counter += 1
-            else:
-                self.stay_counter = 0
-
-            if self.stay_counter >= 5:
-                reward += -5.0
-            if self.stay_counter >= 10:
-                reward += -10.0
-            if self.stay_counter >= 20:
-                reward += -40.0
-
-        all_cleaned = np.all(self.dirt_map == 0) # check if all tiles are cleaned
-        at_start = self.agent_pos == self.start_pos # check if agent is at starting position
-        terminated = bool(all_cleaned and at_start) # task is done only if all cleaned and at start
-        truncated = False
-
-        if terminated:
-            reward += self.reward_return_home # terminal bonus
-        elif all_cleaned and not at_start:
-            reward += self.penalty_delay_return
-
-        # End episode early if the agent is stuck or doing poorly
-        if self.stay_counter >= 30:
+        # update the grids status
+        if self.dirt_map[x, y] == 1:
+            reward += self.reward_clean_tile
+        self.cleaned_map[x, y] = 1
+        self.dirt_map[x, y] = 0
+        self.path_map[x, y] += 1
+        if self.path_map[x, y] >= 127:
             truncated = True
+        reward += self.penalty_rotation * self.path_map[x, y]
+        
+        # update reward if all cleaned, for now just clean up everything
+        if np.all(self.dirt_map == 0):
+            if self.agent_pos == self.start_pos:
+                reward += self.reward_return_home
+                terminated = True
+            else:
+                reward += self.reward_done_clean
+                self.reward_done_clean = 0
+    
+        # take local observation
+        new_state_map = self._update_local_view()
 
-        return self._get_obs(), reward, terminated, truncated, {
-            "all_cleaned": all_cleaned,
-            "returned_home": at_start,
-            "path_map": self.path_map
-        }
+        # update state map
+        for (x, y, state) in new_state_map:
+            if (0 <= x < self.grid_size[0] and 0 <= y < self.grid_size[1]):
+                if self.state_map[x, y] == 1: # previously unknown
+                    reward += self.reward_clean_tile # encourage filling in the state map
+                self.state_map[x, y] = state
 
-    def render(self):
-        """Display the environment visually"""
-        if self.render_mode == "human":
-            # existing text-based rendering
-            grid = np.full(self.grid_size, '.', dtype='<U1')
-            for i in range(self.grid_size[0]):
-                for j in range(self.grid_size[1]):
-                    if self.obstacle_map[i, j]:
-                        grid[i, j] = '#'
-                    elif self.dirt_map[i, j]:
-                        grid[i, j] = 'D'
-                    elif self.cleaned_map[i, j]:
-                        grid[i, j] = '*'
-            x, y = self.agent_pos
-            grid[x, y] = 'A'
-            print("\n".join(" ".join(row) for row in grid))
-            print(f"Orientation: {self.agent_orient}\n")
-
-        elif self.render_mode == "plot":
-            h, w = self.grid_size
-            grid_image = np.zeros((h, w))
-
-            # Encode basic layers
-            grid_image[self.cleaned_map == 1] = 3  # light blue
-            grid_image[self.dirt_map == 1] = 2     # brown
-            grid_image[self.obstacle_map == 1] = 1 # black
-
-            # Overlay path as a different value (we'll blend color later)
-            for (i, j), count in np.ndenumerate(self.path_map):
-                if count > 0 and grid_image[i, j] == 0:
-                    grid_image[i, j] = 0.5  # light gray trail
-
-            # Agent position overrides others
-            x, y = self.agent_pos
-            grid_image[x, y] = 4  # red
-
-            # Create a custom color map
-            from matplotlib import colors
-            cmap = colors.ListedColormap(["white", "black", "saddlebrown", "lightblue", "gray", "red"])
-            bounds = [0, 1, 2, 3, 4, 5]
-            norm = colors.BoundaryNorm(bounds, cmap.N)
-
-            import matplotlib.pyplot as plt
-            plt.figure(figsize=(8, 8))
-            plt.imshow(grid_image, cmap=cmap, norm=norm)
-            plt.title(f"Vacuum Path - Orientation: {self.agent_orient}")
-            plt.xticks([]); plt.yticks([])
-            plt.show()
+        return self._get_obs(), reward, terminated, truncated, {}
 
     def render_frame(self):
         """Return a visual frame/image"""
@@ -368,6 +317,31 @@ class VacuumEnv(gym.Env):
 
         return img
 
+    def _compute_coverage_ratio(self):
+        total_dirt = np.sum(self.dirt_map == 1) + np.sum(self.cleaned_map == 1)
+        cleaned = np.sum(self.cleaned_map == 1)
+        return cleaned / total_dirt if total_dirt > 0 else 0
+
+    def _compute_redundancy_rate(self):
+        path_visits = self.path_map[self.obstacle_map == 0]
+        return np.mean(path_visits) if path_visits.size > 0 else 0
+
+    def _compute_revisit_ratio(self):
+        """Calculate the ratio of revisits to total steps.
+        A revisit is counted when a cell is visited more than once."""
+        total_steps = np.sum(self.path_map)
+        if total_steps == 0:
+            return 0.0
+        revisits = np.sum(np.maximum(self.path_map - 1, 0))
+        return revisits / total_steps
+
+    def compute_metrics(self):
+        return {
+            "coverage_rate": self._compute_coverage_ratio(),
+            "redundancy_rate": self._compute_redundancy_rate(),
+            "revisit_ratio": self._compute_revisit_ratio()
+        }
+
 class WrappedVacuumEnv:
     def __init__(self, grid_size, dirt_num, max_steps, algo, walls=None):
         self.walls = walls
@@ -378,7 +352,7 @@ class WrappedVacuumEnv:
         self.algo = algo
 
     def __call__(self):
-        env = gym.make("VacuumEnv-v0", grid_size=self.grid_size, render_mode="plot", dirt_num=self.dirt_num)
+        env = gym.make("VacuumEnv-v0", grid_size=self.grid_size, dirt_num=self.dirt_num)
         env = TimeLimit(env, max_episode_steps=self.max_steps)
         env = ExplorationBonusWrapper(env, bonus=0.3)
         env = ExploitationPenaltyWrapper(env, time_penalty=-0.002, stay_penalty=-0.1)
