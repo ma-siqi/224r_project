@@ -113,7 +113,10 @@ class MetricWrapper(gym.Wrapper):
 
         if terminated or truncated:
             # Compute metrics
-            self.metrics = self.base_env.compute_metrics()
+            metrics = self.base_env.compute_metrics()
+            self.metrics["coverage_ratio"] = metrics["coverage_rate"]
+            self.metrics['path_efficiency'] = metrics['redundancy_rate']
+            self.metrics['revisit_ratio'] = metrics['revisit_ratio']
             info.update(self.metrics)
 
         return obs, reward, terminated, truncated, info
