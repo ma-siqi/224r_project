@@ -200,8 +200,8 @@ def eval_and_save(env, model, n_episodes=5, max_steps=100, walls=None,
         reward_components_sum = defaultdict(float)
 
         if isinstance(obs, dict):
-            if algo == 'dqn':
-                obs = flatten(env.observation_space, obs)
+            #if algo == 'dqn':
+            obs = flatten(env.observation_space, obs)
 
         for steps in range(max_steps):
             frame = env.unwrapped.render_frame()
@@ -262,8 +262,16 @@ def eval_and_save(env, model, n_episodes=5, max_steps=100, walls=None,
 
     # Save all metrics
     metrics_path = os.path.join(dir_name, "all_metrics.json")
+
+    def convert_to_builtin(obj):
+        if isinstance(obj, np.generic):
+            return obj.item()
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return obj
+
     with open(metrics_path, "w") as f:
-        json.dump(all_metrics, f, indent=4)
+        json.dump(all_metrics, f, indent=4, default=convert_to_builtin)
     print(f"All metrics saved to {metrics_path}")
 
     # Compute and save summary statistics
@@ -398,22 +406,27 @@ if __name__ == "__main__":
 
         # Save VecNormalize stats
         train_env.save("logs/ppo/vec_normalize.pkl")
-        model = PPO.load("./logs/ppo/models/best_model", env=eval_env)
 
         # Load stats into eval env
         eval_env = VecNormalize.load("logs/ppo/vec_normalize.pkl", eval_env)
         eval_env.training = False
         eval_env.norm_reward = False
 
+        # Load the best model
+        model = PPO.load("./logs/ppo/models/best_model")
+
         # Save the final trajectory
+        # unwrapped_train_env = base_env.venv.envs[0]
+        # unwrapped_train_env.training = False
         #print("Saving PPO training trajectory...")
-        #eval_and_save(base_env, model, n_episodes=1, max_steps=100, walls=walls, dir_name="./logs/ppo", algo='ppo', name='train')
+        #eval_and_save(unwrapped_train_env, model, n_episodes=1, max_steps=100, walls=walls, dir_name="./logs/ppo", algo='ppo', name='train')
 
         # Save best eval trajectory
+        unwrapped_env = eval_env.venv.envs[0]
+        unwrapped_env.training = False
         print("Saving PPO eval trajectory...")
-        eval_and_save(eval_base_env, model, n_episodes=5, max_steps=3000, walls=eval_walls, dir_name = "./logs/ppo", 
+        eval_and_save(unwrapped_env, model, n_episodes=5, max_steps=3000, walls=eval_walls, dir_name = "./logs/ppo",
                       algo='ppo', name='eval', mode = "video")
-        #rollout_and_record(eval_env, model, filename="ppo_eval.mp4", max_steps=3000, walls=eval_walls)
 
     elif algo == "dqn":
         # --------------------------------------
@@ -466,18 +479,22 @@ if __name__ == "__main__":
         eval_env.training = False
         eval_env.norm_reward = False
 
-        # Load the best model
-        #model = DQN.load("./logs/dqn/models/best_model", env=eval_env)
-
         # Save the final trajectory
-        print("Saving DQN training trajectory...")
-        eval_and_save(base_env, model, n_episodes=10, max_steps=3000, walls=walls, dir_name="./logs/dqn", algo='dqn',
-                      name='train', mode="video")
+        # unwrapped_train_env = base_env.venv.envs[0]
+        # unwrapped_train_env.training = False
+        # print("Saving DQN training trajectory...")
+        # eval_and_save(unwrapped_train_env, model, n_episodes=10, max_steps=3000, walls=walls, dir_name="./logs/dqn", algo='dqn',
+        #              name='train', mode="video")
+
+        # Load the best model
+        model = DQN.load("./logs/dqn/models/best_model")
 
         # Save best eval trajectory
-        #print("Saving DQN eval trajectory...")
-        #eval_and_save(eval_base_env, model, n_episodes=1, max_steps=3000, walls=eval_walls, dir_name="./logs/dqn",
-        #              algo='dqn', name='eval')
+        unwrapped_env = eval_env.venv.envs[0]
+        unwrapped_env.training = False
+        print("Saving DQN eval trajectory...")
+        eval_and_save(unwrapped_env, model, n_episodes=10, max_steps=3000, walls=eval_walls, dir_name="./logs/dqn",
+                      algo='dqn', name='eval', mode="video")
 
     elif algo == "her":
         # -----------------------------------------------

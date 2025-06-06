@@ -52,11 +52,11 @@ class VacuumEnv(gym.Env):
             "agent_pos": spaces.Box(low=0, high=1, shape=(self.grid_size[0] * self.grid_size[1],), dtype=np.uint8),
             "agent_orient": spaces.Box(low=0, high=7, shape=(1,), dtype=np.uint8),
             "dirt_map": spaces.Box(low=0, high=1, shape=self.grid_size, dtype=np.uint8),
-            "obstacle_ahead": spaces.Box(low=0, high=1, shape=(1,), dtype=np.uint8),
-            "obstacle_left": spaces.Box(low=0, high=1, shape=(1,), dtype=np.uint8),
-            "obstacle_right": spaces.Box(low=0, high=1, shape=(1,), dtype=np.uint8),
-            "known_obstacle_map": spaces.Box(low=0, high=1, shape=self.grid_size, dtype=np.uint8)
-            # "local_view": spaces.Box(low=-2, high=1, shape=(8,), dtype=np.int8),  # local observation of grids
+            #"obstacle_ahead": spaces.Box(low=0, high=1, shape=(1,), dtype=np.uint8),
+            #"obstacle_left": spaces.Box(low=0, high=1, shape=(1,), dtype=np.uint8),
+            #"obstacle_right": spaces.Box(low=0, high=1, shape=(1,), dtype=np.uint8),
+            "known_obstacle_map": spaces.Box(low=0, high=1, shape=self.grid_size, dtype=np.uint8),
+            "local_view": spaces.Box(low=0, high=1, shape=(8,), dtype=np.uint8),  # local observation of grids
             # "state_map": spaces.Box(low=-2, high=1, shape=self.grid_size, dtype=np.int8)
         })
 
@@ -225,16 +225,28 @@ class VacuumEnv(gym.Env):
             self.known_obstacle_map[nx, ny] == 1
         )
 
+    def _compute_local_view(self):
+        view = np.zeros(8, dtype=np.uint8)
+        for i, (dx, dy) in enumerate(DIRECTIONS):
+            nx, ny = self.agent_pos[0] + dx, self.agent_pos[1] + dy
+            if not (0 <= nx < self.grid_size[0] and 0 <= ny < self.grid_size[1]):
+                view[i] = 1
+            elif self.known_obstacle_map[nx, ny] == 1:
+                view[i] = 1
+            else:
+                view[i] = 0
+        return view
+
     def _get_obs(self):
-        """Return structured observation (flattened later by FlattenObservation)"""
         return {
             "start_pos": np.array(self._encode_position(self.start_pos), dtype=np.uint8),
             "agent_pos": np.array(self._encode_position(self.agent_pos), dtype=np.uint8),
             "agent_orient": np.array([self.agent_orient], dtype=np.uint8),
             "dirt_map": np.array(self.dirt_map, dtype=np.uint8),
-            "obstacle_ahead": np.array([self._obstacle_ahead()], dtype=np.uint8),
-            "obstacle_left": np.array([self._obstacle_in_direction("left")], dtype=np.uint8),
-            "obstacle_right": np.array([self._obstacle_in_direction("right")], dtype=np.uint8),
+            #"obstacle_ahead": np.array([self._obstacle_ahead()], dtype=np.uint8),
+            #"obstacle_left": np.array([self._obstacle_in_direction("left")], dtype=np.uint8),
+            #"obstacle_right": np.array([self._obstacle_in_direction("right")], dtype=np.uint8),
+            "local_view": np.array(self._compute_local_view(), dtype=np.uint8),
             "known_obstacle_map": np.array(self.known_obstacle_map, dtype=np.uint8)
         }
 
@@ -375,8 +387,8 @@ class WrappedVacuumEnv:
         env = Monitor(env)
 
         env = FlattenObservation(env)
-        self.base_env = env
         env.reset(options={"walls": self.walls})
+        self.base_env = env
         return env
 
 

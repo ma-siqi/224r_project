@@ -1,0 +1,11 @@
+[
+    {
+        "coverage_rate": 0.1348314606741573,
+        "redundancy_rate": 1.595505617977528,
+        "revisit_ratio": 158.94366197183098,
+        "episode_length": 141,
+        "episode_reward": 17.46711172079171,
+        "base_env_reward": 8.324000000000067,
+        "new_tile_bonus": 3.2999999999999994,
+        "new_obs_bonus": 0.6,
+        "frontier_bonus": 
