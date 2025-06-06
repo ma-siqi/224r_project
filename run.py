@@ -20,6 +20,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib import animation
 from IPython.display import HTML
+from collections import defaultdict
+
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.evaluation import evaluate_policy
@@ -184,17 +186,18 @@ def generate_eval_layout_grid():
 # Rollout and save animation
 # --------------------------------------
 
-def eval_and_save(env, model, n_episodes=5, max_steps=100, walls=None, 
-                  dir_name = "logs", algo='ppo', mode="pic", name="eval"):
-    
+def eval_and_save(env, model, n_episodes=5, max_steps=100, walls=None,
+                  dir_name="logs", algo='ppo', mode="pic", name="eval"):
     all_metrics = []
     os.makedirs(dir_name, exist_ok=True)
+
     for i in range(n_episodes):
         obs, _ = env.reset(options={"walls": walls})
         last_frame = None
         episode_reward = 0
-        steps = 0
         frames = []
+        steps = 0
+        reward_components_sum = defaultdict(float)
 
         if isinstance(obs, dict):
             if algo == 'dqn':
@@ -211,22 +214,30 @@ def eval_and_save(env, model, n_episodes=5, max_steps=100, walls=None,
                 action, _ = model.predict(obs)
             except:
                 action, _ = model.predict(obs, deterministic=True)
-            obs, reward, terminated, truncated, _ = env.step(action)
 
+            obs, reward, terminated, truncated, info = env.step(action)
             episode_reward += reward
+
+            # Aggregate reward components from wrapper if available
+            if "reward_components" in info:
+                for k, v in info["reward_components"].items():
+                    reward_components_sum[k] += v
+
             if terminated or truncated:
                 break
 
+        # Get custom metrics from env
         metrics = env.unwrapped.compute_metrics()
-
         metrics["episode_length"] = steps + 1
         metrics["episode_reward"] = episode_reward
 
+        # Include detailed reward breakdown
+        metrics.update(reward_components_sum)
         all_metrics.append(metrics)
 
+        # Save frame/animation
         fname = f"{name}_ep{i}"
         if mode == "video":
-            # Save animation
             fig, ax = plt.subplots()
             im = ax.imshow(frames[0])
             ax.axis("off")
@@ -238,7 +249,6 @@ def eval_and_save(env, model, n_episodes=5, max_steps=100, walls=None,
             ani = animation.FuncAnimation(
                 fig, update, frames=len(frames), interval=100, blit=True
             )
-
             ani.save(os.path.join(dir_name, fname + ".mp4"), writer="ffmpeg")
             plt.close(fig)
             print(f"Video saved to {fname}.mp4")
@@ -250,13 +260,13 @@ def eval_and_save(env, model, n_episodes=5, max_steps=100, walls=None,
             plt.close()
             print(f"Last frame saved to {fname}")
 
-    # Save all metrics to JSON
+    # Save all metrics
     metrics_path = os.path.join(dir_name, "all_metrics.json")
     with open(metrics_path, "w") as f:
         json.dump(all_metrics, f, indent=4)
     print(f"All metrics saved to {metrics_path}")
 
-    # Compute mean and std
+    # Compute and save summary statistics
     keys = all_metrics[0].keys()
     summary = {
         k: {
@@ -264,6 +274,7 @@ def eval_and_save(env, model, n_episodes=5, max_steps=100, walls=None,
             "std": float(np.std([m[k] for m in all_metrics]))
         }
         for k in keys
+        if isinstance(all_metrics[0][k], (int, float))
     }
 
     summary_path = os.path.join(dir_name, "summary_metrics.json")
@@ -456,7 +467,7 @@ if __name__ == "__main__":
         eval_env.norm_reward = False
 
         # Load the best model
-        model = DQN.load("./logs/dqn/models/best_model", env=eval_env)
+        #model = DQN.load("./logs/dqn/models/best_model", env=eval_env)
 
         # Save the final trajectory
         print("Saving DQN training trajectory...")

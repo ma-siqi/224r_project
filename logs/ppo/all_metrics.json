@@ -1,72 +1,87 @@
 [
     {
-        "episode_length": 100,
-        "episode_reward": -185.19999999999996,
-        "coverage_ratio": 0.02040816326530612,
-        "revisit_ratio": 0.0625,
-        "redundancy_ratio": 0.043243243243243246
+        "coverage_rate": 0.9438202247191011,
+        "redundancy_rate": 16.123595505617978,
+        "revisit_ratio": 3.7846689895470385,
+        "episode_length": 1434,
+        "episode_reward": 550.7129999999999,
+        "base_env_reward": -3.2869999999998454,
+        "new_tile_bonus": 0.0,
+        "new_obs_bonus": 1.0999999999999999,
+        "frontier_bonus": 717.0,
+        "facing_bonus": 56.89999999999923,
+        "spin_penalty": -64.6000000000006,
+        "stuck_penalty": -201.30000000000192,
+        "escape_bonus": 19.79999999999996,
+        "wall_face_penalty": -3.7999999999999945,
+        "rotate_when_blocked": 28.90000000000014
     },
     {
-        "episode_length": 100,
-        "episode_reward": -140.75000000000003,
-        "coverage_ratio": 0.018867924528301886,
-        "revisit_ratio": 0.35,
-        "redundancy_ratio": 0.05390835579514825
+        "coverage_rate": 0.044444444444444446,
+        "redundancy_rate": 1.4444444444444444,
+        "revisit_ratio": 189.27692307692308,
+        "episode_length": 129,
+        "episode_reward": -39.10000000000008,
+        "base_env_reward": -60.15,
+        "new_tile_bonus": 0.0,
+        "new_obs_bonus": 0.1,
+        "frontier_bonus": 64.5,
+        "facing_bonus": 0.0,
+        "spin_penalty": 0.0,
+        "stuck_penalty": -37.2,
+        "escape_bonus": 0.0,
+        "wall_face_penalty": -6.349999999999985,
+        "rotate_when_blocked": 0.0
     },
     {
-        "episode_length": 100,
-        "episode_reward": -51.909999996423686,
-        "coverage_ratio": 0.16326530612244897,
-        "revisit_ratio": 0.0,
-        "redundancy_ratio": 0.0918918918918919
+        "coverage_rate": 0.26666666666666666,
+        "redundancy_rate": 2.0,
+        "revisit_ratio": 108.53333333333333,
+        "episode_length": 179,
+        "episode_reward": 8.778999999999884,
+        "base_env_reward": -40.721000000000025,
+        "new_tile_bonus": 0.0,
+        "new_obs_bonus": 0.7,
+        "frontier_bonus": 89.5,
+        "facing_bonus": 2.0,
+        "spin_penalty": -0.2,
+        "stuck_penalty": -37.8,
+        "escape_bonus": 0.8,
+        "wall_face_penalty": -6.399999999999985,
+        "rotate_when_blocked": 0.8999999999999999
     },
     {
-        "episode_length": 100,
-        "episode_reward": -301.39999999999964,
-        "coverage_ratio": 0.024390243902439025,
-        "revisit_ratio": 0.08333333333333333,
-        "redundancy_ratio": 0.03234501347708895
+        "coverage_rate": 0.044444444444444446,
+        "redundancy_rate": 1.4444444444444444,
+        "revisit_ratio": 189.27692307692308,
+        "episode_length": 129,
+        "episode_reward": -39.10000000000008,
+        "base_env_reward": -60.15,
+        "new_tile_bonus": 0.0,
+        "new_obs_bonus": 0.1,
+        "frontier_bonus": 64.5,
+        "facing_bonus": 0.0,
+        "spin_penalty": 0.0,
+        "stuck_penalty": -37.2,
+        "escape_bonus": 0.0,
+        "wall_face_penalty": -6.349999999999985,
+        "rotate_when_blocked": 0.0
     },
     {
-        "episode_length": 100,
-        "episode_reward": -204.85,
-        "coverage_ratio": 0.06666666666666667,
-        "revisit_ratio": 0.13636363636363635,
-        "redundancy_ratio": 0.05945945945945946
-    },
-    {
-        "episode_length": 100,
-        "episode_reward": -177.04999999999995,
-        "coverage_ratio": 0.02702702702702703,
-        "revisit_ratio": 0.25,
-        "redundancy_ratio": 0.043243243243243246
-    },
-    {
-        "episode_length": 100,
-        "episode_reward": -259.5999999999998,
-        "coverage_ratio": 0.024390243902439025,
-        "revisit_ratio": 0.07142857142857142,
-        "redundancy_ratio": 0.03773584905660377
-    },
-    {
-        "episode_length": 100,
-        "episode_reward": -102.55000000000001,
-        "coverage_ratio": 0.0136986301369863,
-        "revisit_ratio": 0.25925925925925924,
-        "redundancy_ratio": 0.07277628032345014
-    },
-    {
-        "episode_length": 100,
-        "episode_reward": -123.70000000000005,
-        "coverage_ratio": 0.02040816326530612,
-        "revisit_ratio": 0.043478260869565216,
-        "redundancy_ratio": 0.062162162162162166
-    },
-    {
-        "episode_length": 100,
-        "episode_reward": -290.45000000000005,
-        "coverage_ratio": 0.034482758620689655,
-        "revisit_ratio": 0.0,
-        "redundancy_ratio": 0.03234501347708895
+        "coverage_rate": 0.37362637362637363,
+        "redundancy_rate": 2.3516483516483517,
+        "revisit_ratio": 79.48598130841121,
+        "episode_length": 213,
+        "episode_reward": 31.472999999999924,
+        "base_env_reward": -34.37699999999978,
+        "new_tile_bonus": 0.0,
+        "new_obs_bonus": 0.8999999999999999,
+        "frontier_bonus": 106.5,
+        "facing_bonus": 2.4499999999999997,
+        "spin_penalty": -0.30000000000000004,
+        "stuck_penalty": -39.59999999999998,
+        "escape_bonus": 1.0,
+        "wall_face_penalty": -6.099999999999986,
+        "rotate_when_blocked": 0.9999999999999999
     }
 ]
