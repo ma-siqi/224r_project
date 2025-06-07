@@ -5,7 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
-from wrappers import ExplorationBonusWrapper
+from wrappers import DQNExplorationWrapper, PPOExplorationWrapper
 from gymnasium.wrappers import FlattenObservation
 from stable_baselines3.common.monitor import Monitor
 from eval import MetricWrapper
@@ -52,12 +52,8 @@ class VacuumEnv(gym.Env):
             "agent_pos": spaces.Box(low=0, high=1, shape=(self.grid_size[0] * self.grid_size[1],), dtype=np.uint8),
             "agent_orient": spaces.Box(low=0, high=7, shape=(1,), dtype=np.uint8),
             "dirt_map": spaces.Box(low=0, high=1, shape=self.grid_size, dtype=np.uint8),
-            #"obstacle_ahead": spaces.Box(low=0, high=1, shape=(1,), dtype=np.uint8),
-            #"obstacle_left": spaces.Box(low=0, high=1, shape=(1,), dtype=np.uint8),
-            #"obstacle_right": spaces.Box(low=0, high=1, shape=(1,), dtype=np.uint8),
             "known_obstacle_map": spaces.Box(low=0, high=1, shape=self.grid_size, dtype=np.uint8),
             "local_view": spaces.Box(low=0, high=1, shape=(8,), dtype=np.uint8),  # local observation of grids
-            # "state_map": spaces.Box(low=-2, high=1, shape=self.grid_size, dtype=np.int8)
         })
 
         self.orientations = {
@@ -243,9 +239,6 @@ class VacuumEnv(gym.Env):
             "agent_pos": np.array(self._encode_position(self.agent_pos), dtype=np.uint8),
             "agent_orient": np.array([self.agent_orient], dtype=np.uint8),
             "dirt_map": np.array(self.dirt_map, dtype=np.uint8),
-            #"obstacle_ahead": np.array([self._obstacle_ahead()], dtype=np.uint8),
-            #"obstacle_left": np.array([self._obstacle_in_direction("left")], dtype=np.uint8),
-            #"obstacle_right": np.array([self._obstacle_in_direction("right")], dtype=np.uint8),
             "local_view": np.array(self._compute_local_view(), dtype=np.uint8),
             "known_obstacle_map": np.array(self.known_obstacle_map, dtype=np.uint8)
         }
@@ -382,7 +375,10 @@ class WrappedVacuumEnv:
     def __call__(self):
         env = gym.make("VacuumEnv-v0", grid_size=self.grid_size, dirt_num=self.dirt_num)
         env = TimeLimit(env, max_episode_steps=self.max_steps)
-        env = ExplorationBonusWrapper(env)
+        if self.algo == "ppo":
+            env = PPOExplorationWrapper(env)
+        elif self.algo == "dqn":
+            env = DQNExplorationWrapper(env)
         env = MetricWrapper(env)
         env = Monitor(env)
 

@@ -6,7 +6,7 @@ from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.monitor import Monitor
 
 from env import VacuumEnv, WrappedVacuumEnv
-from wrappers import ExplorationBonusWrapper, ExploitationPenaltyWrapper
+from wrappers import DQNExplorationWrapper, PPOExplorationWrapper
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from run import generate_1b1b_layout_grid
 
