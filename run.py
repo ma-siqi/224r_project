@@ -200,7 +200,6 @@ def eval_and_save(env, model, n_episodes=5, max_steps=100, walls=None,
         reward_components_sum = defaultdict(float)
 
         if isinstance(obs, dict):
-            #if algo == 'dqn':
             obs = flatten(env.observation_space, obs)
 
         for steps in range(max_steps):
@@ -342,8 +341,7 @@ if __name__ == "__main__":
 
         base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, dirt_num=dirt_num)
         base_env = TimeLimit(base_env, max_episode_steps=max_steps)
-        base_env = ExplorationBonusWrapper(base_env, bonus=0.3)
-        base_env = ExploitationPenaltyWrapper(base_env, time_penalty=-0.002, stay_penalty=-0.1)
+        base_env = ExplorationBonusWrapper(base_env)
 
         # monitor for stats logging
         base_env = MetricWrapper(base_env)
@@ -412,21 +410,21 @@ if __name__ == "__main__":
         eval_env.training = False
         eval_env.norm_reward = False
 
-        # Load the best model
-        model = PPO.load("./logs/ppo/models/best_model")
-
         # Save the final trajectory
         # unwrapped_train_env = base_env.venv.envs[0]
         # unwrapped_train_env.training = False
         #print("Saving PPO training trajectory...")
         #eval_and_save(unwrapped_train_env, model, n_episodes=1, max_steps=100, walls=walls, dir_name="./logs/ppo", algo='ppo', name='train')
 
+        # Load the best model
+        model = PPO.load("./logs/ppo/models/best_model")
+
         # Save best eval trajectory
         unwrapped_env = eval_env.venv.envs[0]
         unwrapped_env.training = False
         print("Saving PPO eval trajectory...")
         eval_and_save(unwrapped_env, model, n_episodes=5, max_steps=3000, walls=eval_walls, dir_name = "./logs/ppo",
-                      algo='ppo', name='eval', mode = "video")
+                      algo='ppo', name='eval', mode = "pic")
 
     elif algo == "dqn":
         # --------------------------------------
