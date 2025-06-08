@@ -22,6 +22,7 @@ class DQNExplorationWrapper(gym.Wrapper):
         super().__init__(env)
         self.grid_size = self.env.unwrapped.grid_size
         self.orientations = self.env.unwrapped.orientations
+        self.max_steps = getattr(self.env.unwrapped, "max_steps", 3000)  # Fallback if undefined
 
         # Reward tuning parameters
         self.new_tile_bonus = new_tile_bonus
@@ -37,10 +38,15 @@ class DQNExplorationWrapper(gym.Wrapper):
         self.wall_face_penalty = wall_face_penalty
         self.decay = decay  # unused now for frontier bonus
 
+        # For dynamic shaping
+        self.initial_stuck_penalty = stuck_penalty
+        self.initial_spin_penalty = spin_without_move_penalty
+        self.dynamic_penalty_enabled = True
+
         # Internal state
         self.visit_map = np.zeros(self.grid_size, dtype=np.float32)
         self.known_mask = np.zeros(self.grid_size, dtype=np.uint8)
-        self.action_history = deque(maxlen=8)
+        self.action_history = deque(maxlen=6)
         self.pos_history = deque(maxlen=10)
         self.was_stuck_or_blocked = False
         self.timestep = 0
@@ -64,6 +70,12 @@ class DQNExplorationWrapper(gym.Wrapper):
         self.timestep += 1
         known_mask_before = np.copy(self.known_mask)
         prev_pos = tuple(self.env.unwrapped.agent_pos)
+
+        # Dynamic penalty shaping
+        if self.dynamic_penalty_enabled:
+            progress = self.timestep / self.max_steps
+            self.stuck_penalty = -1.0 - (1.0 * (1.0 - progress))  # from -2.0 to -1.0
+            self.spin_without_move_penalty = -1.0 - (1.0 * (1.0 - progress))  # from -2.0 to -1.0
 
         # Capture pre-step dirt status for dirty tile bonus
         pre_dirt_map = np.copy(self.env.unwrapped.dirt_map)
@@ -185,9 +197,7 @@ class DQNExplorationWrapper(gym.Wrapper):
         """Bonus for facing useful tiles after rotating."""
         facing_bonus = 0.0
         if action in [1, 2]:
-            # Facing dirt or unknown
             facing_bonus += self._facing_bonus(pos, orient, dirt_map)
-            # Also encourage facing *newly discovered* obstacle
             dx, dy = self.orientations[orient]
             tx, ty = pos[0] + dx, pos[1] + dy
             if 0 <= tx < self.grid_size[0] and 0 <= ty < self.grid_size[1]:

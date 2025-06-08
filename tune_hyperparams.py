@@ -53,95 +53,125 @@ ppo_search_space = {
 }
 
 dqn_search_space = {
-    "learning_rate": (1e-5, 1e-3, "log"),
-    "buffer_size": [50_000, 100_000, 200_000], # size of replay buffer
+    "learning_rate": (5e-5, 5e-4, "log"), # narrowed range for more stable learning
+    "buffer_size": [100_000, 200_000, 500_000, 1_000_000], # size of replay buffer
     "batch_size": [32, 64, 128], # number of samples per training step
-    "exploration_fraction": (0.3, 0.5, "float"), # fraction of total training steps over which exploration decreases
+    "exploration_fraction": (0.1, 0.4, "float"), # fraction of total training steps over which exploration decreases
     "exploration_initial_eps": (0.8, 1.0, "float"), # initial exploration probability
-    "exploration_final_eps": (0.01, 0.1, "float"), # final exploration probability
-    "gamma": (0.98, 0.999, "float"),
+    "exploration_final_eps": (0.05, 0.15, "float"), # final exploration probability
+    "gamma": (0.98, 0.999, "float"), # discount factor
 }
+
+# --------------------------------------
+# Evaluation metric
+# --------------------------------------
+
+def evaluate_custom(model, env, n_eval_episodes=5):
+    coverage_list = []
+    reward_list = []
+
+    for _ in range(n_eval_episodes):
+        obs = env.reset()  # only obs returned from DummyVecEnv
+        done = False
+        episode_reward = 0
+
+        while not done:
+            action, _ = model.predict(obs, deterministic=True)
+            obs, reward, done, info = env.step(action)
+
+            reward = reward[0]
+            done = done[0]
+            episode_reward += reward
+
+            info = info[0]
+
+        coverage = info.get("coverage_ratio", 0.0)
+        coverage_list.append(coverage)
+        reward_list.append(episode_reward)
+
+    mean_coverage = np.mean(coverage_list)
+    mean_reward = np.mean(reward_list)
+    return mean_coverage + 0.0005 * mean_reward
 
 # --------------------------------------
 # Objective functions
 # --------------------------------------
 def ppo_objective(trial):
-    train_env = make_env(algo='ppo')
-    eval_env = make_env(algo='ppo')
+    scores = []
+    for seed in [0, 1, 2]:
+        train_env = make_env(algo='ppo')
+        eval_env = make_env(algo='ppo')
 
-    seed = trial.number
-    train_env.seed(seed)
-    eval_env.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+        train_env.seed(seed)
+        eval_env.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
 
-    lr_low, lr_high, lr_scale = ppo_search_space["learning_rate"]
-    ent_low, ent_high, ent_scale = ppo_search_space["ent_coef"]
-    gamma_low, gamma_high, _ = ppo_search_space["gamma"]
-    clip_low, clip_high, _ = ppo_search_space["clip_range"]
+        lr_low, lr_high, lr_scale = ppo_search_space["learning_rate"]
+        ent_low, ent_high, ent_scale = ppo_search_space["ent_coef"]
+        gamma_low, gamma_high, _ = ppo_search_space["gamma"]
+        clip_low, clip_high, _ = ppo_search_space["clip_range"]
 
-    params = {
-        "learning_rate": trial.suggest_float("learning_rate", lr_low, lr_high, log=(lr_scale == "log")),
-        "ent_coef": trial.suggest_float("ent_coef", ent_low, ent_high, log=(ent_scale == "log")),
-        "n_steps": trial.suggest_categorical("n_steps", ppo_search_space["n_steps"]),
-        "gamma": trial.suggest_float("gamma", gamma_low, gamma_high),
-        "clip_range": trial.suggest_float("clip_range", clip_low, clip_high),
-    }
-    
-    model = PPO("MlpPolicy", train_env, verbose=0, **params)
-    model.learn(total_timesteps=100_000)
+        params = {
+            "learning_rate": trial.suggest_float("learning_rate", lr_low, lr_high, log=(lr_scale == "log")),
+            "ent_coef": trial.suggest_float("ent_coef", ent_low, ent_high, log=(ent_scale == "log")),
+            "n_steps": trial.suggest_categorical("n_steps", ppo_search_space["n_steps"]),
+            "gamma": trial.suggest_float("gamma", gamma_low, gamma_high),
+            "clip_range": trial.suggest_float("clip_range", clip_low, clip_high),
+        }
 
-    eval_env.ret_rms = train_env.ret_rms
-    eval_env.training = False
-    eval_env.norm_reward = False
+        model = PPO("MlpPolicy", train_env, verbose=0, **params)
+        model.learn(total_timesteps=300_000)
 
-    mean_reward, _ = evaluate_policy(model, eval_env, n_eval_episodes=10, deterministic=True)
-    return mean_reward
+        eval_env.ret_rms = train_env.ret_rms
+        eval_env.training = False
+        eval_env.norm_reward = False
+
+        score = evaluate_custom(model, eval_env, n_eval_episodes=5)
+        scores.append(score)
+    return np.mean(scores)
 
 def dqn_objective(trial):
-    train_env = make_env(algo='dqn')
-    eval_env = make_env(algo='dqn')
+    scores = []
+    for seed in [0, 1, 2]:
+        train_env = make_env(algo='dqn')
+        eval_env = make_env(algo='dqn')
 
-    seed = trial.number
-    train_env.seed(seed)
-    eval_env.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
+        train_env.seed(seed)
+        eval_env.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
 
-    lr_low, lr_high, lr_scale = dqn_search_space["learning_rate"]
-    exploration_frac_low, exploration_frac_high, _ = dqn_search_space["exploration_fraction"]
-    exploration_init_low, exploration_init_high, _ = dqn_search_space["exploration_initial_eps"]
-    exploration_final_low, exploration_final_high, _ = dqn_search_space["exploration_final_eps"]
-    gamma_low, gamma_high, _ = dqn_search_space["gamma"]
+        params = {
+            "learning_rate": trial.suggest_float("learning_rate", 5e-5, 5e-4, log=True),
+            "buffer_size": trial.suggest_categorical("buffer_size", [100_000, 200_000, 500_000]),
+            "batch_size": trial.suggest_categorical("batch_size", [32, 64]),
+            "exploration_fraction": trial.suggest_float("exploration_fraction", 0.1, 0.4),
+            "exploration_initial_eps": trial.suggest_float("exploration_initial_eps", 0.8, 1.0),
+            "exploration_final_eps": trial.suggest_float("exploration_final_eps", 0.05, 0.15),
+            "gamma": trial.suggest_float("gamma", 0.98, 0.999),
+        }
 
-    params = {
-        "learning_rate": trial.suggest_float("learning_rate", lr_low, lr_high, log=(lr_scale == "log")),
-        "buffer_size": trial.suggest_categorical("buffer_size", dqn_search_space["buffer_size"]),
-        "batch_size": trial.suggest_categorical("batch_size", dqn_search_space["batch_size"]),
-        "exploration_fraction": trial.suggest_float("exploration_fraction", exploration_frac_low,
-                                                    exploration_frac_high),
-        "exploration_initial_eps": trial.suggest_float("exploration_initial_eps", exploration_init_low,
-                                                       exploration_init_high),
-        "exploration_final_eps": trial.suggest_float("exploration_final_eps", exploration_final_low,
-                                                     exploration_final_high),
-        "gamma": trial.suggest_float("gamma", gamma_low, gamma_high),
-    }
+        model = DQN("MlpPolicy", train_env, verbose=0, **params)
+        model.learn(total_timesteps=300_000)
 
-    model = DQN("MlpPolicy", train_env, verbose=0, **params)
-    model.learn(total_timesteps=100_000)
-    eval_env.ret_rms = train_env.ret_rms
-    eval_env.training = False
-    eval_env.norm_reward = False
+        # align normalization stats
+        eval_env.ret_rms = train_env.ret_rms
+        eval_env.training = False
+        eval_env.norm_reward = False
 
-    mean_reward, _ = evaluate_policy(model, eval_env, n_eval_episodes=10, deterministic=True)
-    return mean_reward
+        score = evaluate_custom(model, eval_env, n_eval_episodes=5)
+        scores.append(score)
+
+    return np.mean(scores)
+
 
 # --------------------------------------
 # Run tuning and retrain best
 # --------------------------------------
 if __name__ == "__main__":
-    algo = "dqn"  # or "dqn"
-    n_trials = 30
+    algo = "dqn"  # or "ppo"
+    n_trials = 75
 
     print(f"Tuning {algo.upper()} with Optuna ({n_trials} trials)...")
     study = optuna.create_study(direction="maximize", pruner=optuna.pruners.MedianPruner(n_warmup_steps=10))

@@ -42,6 +42,7 @@ class VacuumEnv(gym.Env):
         self.penalty_rotation = penalty_rotation
         self.penalty_invalid_move = penalty_invalid_move
         self.reward_done_clean = reward_done_clean
+        self.init_reward_done_clean = reward_done_clean
         self.reward_return_home = reward_return_home
 
         self.action_space = spaces.Discrete(3) # 0=forward, 1=rotate left, 2=rotate right
@@ -80,6 +81,8 @@ class VacuumEnv(gym.Env):
         super().reset(seed=seed)
         if seed is not None:
             self.rng = np.random.default_rng(seed)
+
+        self.reward_done_clean = self.init_reward_done_clean
 
         # layout reset
         self.cleaned_map = np.zeros(self.grid_size, dtype=np.uint8)
