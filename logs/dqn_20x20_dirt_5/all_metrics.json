@@ -1,0 +1,52 @@
+[
+    {
+        "coverage_rate": 0.20754716981132076,
+        "redundancy_rate": 1.4623655913978495,
+        "revisit_ratio": 134.38235294117646,
+        "episode_length": 543,
+        "episode_reward": -1087.872999999998,
+        "new_tile_bonus": 0.0,
+        "time_penalty": -0.5430000000000004,
+        "stay_penalty": -1005.8999999999997
+    },
+    {
+        "coverage_rate": 0.7346938775510204,
+        "redundancy_rate": 3.8413978494623655,
+        "revisit_ratio": 42.282015395381386,
+        "episode_length": 1428,
+        "episode_reward": -2612.580999999997,
+        "new_tile_bonus": 0.0,
+        "time_penalty": -1.4279999999999535,
+        "stay_penalty": -2471.799999999998
+    },
+    {
+        "coverage_rate": 0.13513513513513514,
+        "redundancy_rate": 0.6434316353887399,
+        "revisit_ratio": 390.8,
+        "episode_length": 239,
+        "episode_reward": -1108.86,
+        "new_tile_bonus": 0.0,
+        "time_penalty": -0.23900000000000018,
+        "stay_penalty": -1023.4
+    },
+    {
+        "coverage_rate": 0.022222222222222223,
+        "redundancy_rate": 0.6513513513513514,
+        "revisit_ratio": 406.1784232365145,
+        "episode_length": 240,
+        "episode_reward": -1502.751000000001,
+        "new_tile_bonus": 0.0,
+        "time_penalty": -0.24000000000000019,
+        "stay_penalty": -1395.2
+    },
+    {
+        "coverage_rate": 0.08888888888888889,
+        "redundancy_rate": 1.527027027027027,
+        "revisit_ratio": 136.67433628318585,
+        "episode_length": 564,
+        "episode_reward": -1549.9569999999965,
+        "new_tile_bonus": 0.0,
+        "time_penalty": -0.5640000000000004,
+        "stay_penalty": -1403.1999999999987
+    }
+]

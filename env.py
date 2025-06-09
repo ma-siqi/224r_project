@@ -292,7 +292,7 @@ class VacuumEnv(gym.Env):
         # update the grids status
         if self.dirt_map[x, y] == 1:
             reward += self.reward_clean_tile
-        self.cleaned_map[x, y] = 1
+            self.cleaned_map[x, y] = 1
         self.dirt_map[x, y] = 0
         self.path_map[x, y] += 1
         if self.path_map[x, y] >= 127:

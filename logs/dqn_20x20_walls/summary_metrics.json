@@ -1,0 +1,66 @@
+{
+  "coverage_rate": {
+    "mean": 0.457505,
+    "std": 0.1266
+  },
+  "redundancy_rate": {
+    "mean": 3.679089,
+    "std": 1.672923
+  },
+  "revisit_ratio": {
+    "mean": 60.150717,
+    "std": 50.816534
+  },
+  "episode_length": {
+    "mean": 1364.2,
+    "std": 620.194083
+  },
+  "episode_reward": {
+    "mean": 185.29521,
+    "std": 293.692006
+  },
+  "base_env_reward": {
+    "mean": 17.3614,
+    "std": 43.249554
+  },
+  "new_tile_bonus": {
+    "mean": 50.64,
+    "std": 14.06549
+  },
+  "new_obs_bonus": {
+    "mean": 27.38,
+    "std": 7.644083
+  },
+  "frontier_bonus": {
+    "mean": 505.0,
+    "std": 190.210738
+  },
+  "facing_bonus": {
+    "mean": 16.55,
+    "std": 5.41237
+  },
+  "step_into_dirty_bonus": {
+    "mean": 42.2,
+    "std": 11.721241
+  },
+  "stuck_penalty": {
+    "mean": -457.254933,
+    "std": 301.978288
+  },
+  "escape_bonus": {
+    "mean": 1.98601,
+    "std": 0.394214
+  },
+  "wall_face_penalty": {
+    "mean": -6.304,
+    "std": 3.491029
+  },
+  "rotate_when_blocked": {
+    "mean": 7.2,
+    "std": 4.944694
+  },
+  "spin_without_move_penalty": {
+    "mean": -19.463267,
+    "std": 15.447505
+  }
+}

@@ -1,0 +1,37 @@
+[
+    {
+        "coverage_rate": 0.5365853658536586,
+        "redundancy_rate": 8.110810810810811,
+        "revisit_ratio": 11.785738087304232,
+        "episode_length": 3000,
+        "episode_reward": -193.12900000000695
+    },
+    {
+        "coverage_rate": 0.6666666666666666,
+        "redundancy_rate": 8.13279132791328,
+        "revisit_ratio": 13.662445851382872,
+        "episode_length": 3000,
+        "episode_reward": -187.10800000000705
+    },
+    {
+        "coverage_rate": 0.2653061224489796,
+        "redundancy_rate": 8.088948787061994,
+        "revisit_ratio": 17.33055648117294,
+        "episode_length": 3000,
+        "episode_reward": -211.90900000000929
+    },
+    {
+        "coverage_rate": 0.6666666666666666,
+        "redundancy_rate": 5.679245283018868,
+        "revisit_ratio": 22.68011390602753,
+        "episode_length": 2106,
+        "episode_reward": -116.15900000000127
+    },
+    {
+        "coverage_rate": 0.3103448275862069,
+        "redundancy_rate": 6.064690026954178,
+        "revisit_ratio": 20.505777777777777,
+        "episode_length": 2249,
+        "episode_reward": -171.38100000000247
+    }
+]

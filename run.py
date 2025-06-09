@@ -334,29 +334,29 @@ if __name__ == "__main__":
         best_params = {}
 
     if algo == "random":
-        # ---------------
-        # Random baseline
-        # ---------------
         max_steps = 3000
 
-        base_env = gym.make("VacuumEnv-v0", grid_size=grid_size, dirt_num=dirt_num)
-        base_env = TimeLimit(base_env, max_episode_steps=max_steps)
-        base_env = ExplorationBonusWrapper(base_env)
+        eval_factory = WrappedVacuumEnv(grid_size=grid_size, dirt_num=dirt_num, max_steps=max_steps, walls=eval_walls,
+                                        algo="random")
+        eval_env = DummyVecEnv([eval_factory])
+        eval_env = VecNormalize(eval_env, norm_obs=False, norm_reward=True)
 
-        # monitor for stats logging
-        base_env = MetricWrapper(base_env)
+        unwrapped_env = eval_env.venv.envs[0]
+        unwrapped_env.training = False
 
-        # reset before training
-        obs, _ = base_env.reset(options={"walls": eval_walls})
-        check_env(base_env, warn=True)
+        check_env(unwrapped_env, warn=True)
 
-        # evaluate the random agent
-        random_agent = RandomAgent(base_env.action_space)
-        metrics = evaluate_random_agent_steps(random_agent, base_env)
-        export_random_metrics(metrics, "best_param/random")
-        with open("random_metrics.json", "w") as f:
+        random_agent = RandomAgent(unwrapped_env.action_space)
+        metrics = evaluate_random_agent_steps(random_agent, unwrapped_env, max_total_steps=500_000,
+                                              max_episode_steps=max_steps)
+
+        export_random_metrics(metrics, "logs/random")
+        with open("logs/random/random_metrics.json", "w") as f:
             json.dump(metrics, f, indent=4)
-        rollout_and_record(base_env.unwrapped, random_agent, filename="random_agent.mp4", max_steps=max_steps, walls=eval_walls)
+
+        eval_and_save(unwrapped_env, random_agent, n_episodes=5, max_steps=3000, walls=eval_walls, dir_name = "./logs/random",
+                      name='eval', mode = "pic")
+
 
     elif algo == "ppo":
         # --------------------------------------
@@ -491,8 +491,8 @@ if __name__ == "__main__":
         unwrapped_env = eval_env.venv.envs[0]
         unwrapped_env.training = False
         print("Saving DQN eval trajectory...")
-        eval_and_save(unwrapped_env, model, n_episodes=10, max_steps=3000, walls=eval_walls, dir_name="./logs/dqn",
-                      algo='dqn', name='eval', mode="video")
+        eval_and_save(unwrapped_env, model, n_episodes=5, max_steps=3000, walls=eval_walls, dir_name="./logs/dqn",
+                      algo='dqn', name='eval', mode="pic")
 
     elif algo == "her":
         # -----------------------------------------------
