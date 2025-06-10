@@ -1,0 +1,24 @@
+Evaluation results saved to: logs\optuna_studies\rainbow_dqn_study_20250608_195648\evaluation_results.json
+
+=== EVALUATION SUMMARY ===
+Total trials evaluated: 30
+Best trial: 12
+Best reward: -104.76 ± 57.07
+Best parameters: {'wrapper_type': 'smart', 'lr': 0.0004067366522568581, 'gamma': 0.9619576978096083, 'batch_size': 128, 'n_step': 1}
+
+=== TOP 5 TRIALS ===
+1.⁠ ⁠Trial 12: -104.76 ± 57.07
+   {'wrapper_type': 'smart', 'lr': 0.0004067366522568581, 'gamma': 0.9619576978096083, 'batch_size': 128, 'n_step': 1}
+2.⁠ ⁠Trial 18: -141.81 ± 88.91
+   {'wrapper_type': 'smart', 'lr': 0.00031751334676103184, 'gamma': 0.9706983871872521, 'batch_size': 128, 'n_step': 1}
+3.⁠ ⁠Trial 20: -216.66 ± 74.38
+   {'wrapper_type': 'smart', 'lr': 0.00015826778805920434, 'gamma': 0.9801745314172199, 'batch_size': 128, 'n_step': 5}
+4.⁠ ⁠Trial 14: -250.31 ± 164.19
+   {'wrapper_type': 'smart', 'lr': 0.00022060040200689755, 'gamma': 0.9595114832982415, 'batch_size': 128, 'n_step': 1}
+5.⁠ ⁠Trial 25: -266.31 ± 248.08
+   {'wrapper_type': 'smart', 'lr': 0.000106278949605646, 'gamma': 0.957670757533945, 'batch_size': 64, 'n_step': 3}
+
+=== HYPERPARAMETER ANALYSIS ===
+Smart wrapper: -331.20 ± 116.29 (n=17)
+Dumb wrapper: -919.45 ± 94.27 (n=13)
+Evaluation completed!

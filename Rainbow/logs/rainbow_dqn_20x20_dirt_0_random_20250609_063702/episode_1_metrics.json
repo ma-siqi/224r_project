@@ -1,0 +1,13 @@
+{
+  "episode": 1,
+  "steps": 3000,
+  "total_reward": -381.30599999999697,
+  "action_distribution": {
+    "forward": 0.271,
+    "left": 0.38166666666666665,
+    "right": 0.3473333333333333
+  },
+  "coverage_ratio": 0.4634146341463415,
+  "path_efficiency": 8.13279132791328,
+  "revisit_ratio": 20.401532822392536
+}

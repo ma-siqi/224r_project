@@ -5,10 +5,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 
-from wrappers import DQNExplorationWrapper, PPOExplorationWrapper, ExplorationBonusWrapper, ExploitationPenaltyWrapper
+from wrappers import DQNExplorationWrapper, PPOExplorationWrapper
 from gymnasium.wrappers import FlattenObservation
 from stable_baselines3.common.monitor import Monitor
 from eval import MetricWrapper
+
+import torch
+import torch.nn as nn
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 DIRECTIONS = np.array([
     (0, -1),   # 0: N
@@ -42,19 +46,17 @@ class VacuumEnv(gym.Env):
         self.penalty_rotation = penalty_rotation
         self.penalty_invalid_move = penalty_invalid_move
         self.reward_done_clean = reward_done_clean
-        self.init_reward_done_clean = reward_done_clean
         self.reward_return_home = reward_return_home
 
         self.action_space = spaces.Discrete(3) # 0=forward, 1=rotate left, 2=rotate right
 
         # dirt map: 0 for clean, 1 for dirty; known obstacle map: 0 for clear, 1 for obstacle
         self.observation_space = spaces.Dict({
-            "start_pos": spaces.Box(low=0, high=1, shape=(self.grid_size[0] * self.grid_size[1],), dtype=np.uint8),
-            "agent_pos": spaces.Box(low=0, high=1, shape=(self.grid_size[0] * self.grid_size[1],), dtype=np.uint8),
-            "agent_orient": spaces.Box(low=0, high=7, shape=(1,), dtype=np.uint8),
+            "start_pos": spaces.Box(low=0, high=1, shape=self.grid_size, dtype=np.uint8),
+            "agent_pos": spaces.Box(low=0, high=1, shape=self.grid_size, dtype=np.uint8),
+            "agent_orient": spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),
             "dirt_map": spaces.Box(low=0, high=1, shape=self.grid_size, dtype=np.uint8),
-            "known_obstacle_map": spaces.Box(low=0, high=1, shape=self.grid_size, dtype=np.uint8),
-            "local_view": spaces.Box(low=0, high=1, shape=(8,), dtype=np.uint8),  # local observation of grids
+            "obstacle_map": spaces.Box(low=0, high=1, shape=self.grid_size, dtype=np.uint8)
         })
 
         self.orientations = {
@@ -77,12 +79,11 @@ class VacuumEnv(gym.Env):
         self.reset() # reset the environment when initialized
 
     def reset(self, *, seed=None, options=None):
+        self.reward_done_clean = 5_000.0
 
         super().reset(seed=seed)
         if seed is not None:
             self.rng = np.random.default_rng(seed)
-
-        self.reward_done_clean = self.init_reward_done_clean
 
         # layout reset
         self.cleaned_map = np.zeros(self.grid_size, dtype=np.uint8)
@@ -199,9 +200,9 @@ class VacuumEnv(gym.Env):
         self.agent_orient = original_orient
 
     def _encode_position(self, pos):
-        one_hot = np.zeros(self.grid_size[0] * self.grid_size[1], dtype=np.uint8)
-        idx = pos[1] * self.grid_size[0] + pos[0]
-        one_hot[idx] = 1
+        one_hot = np.zeros(self.grid_size, dtype=np.uint8)
+        x, y = pos
+        one_hot[x, y] = 1
         return one_hot
 
     def _obstacle_ahead(self):
@@ -237,13 +238,15 @@ class VacuumEnv(gym.Env):
         return view
 
     def _get_obs(self):
+        theta = 2 * np.pi * self.agent_orient / 8
+        orient_vec = [np.cos(theta), np.sin(theta)]
+
         return {
             "start_pos": np.array(self._encode_position(self.start_pos), dtype=np.uint8),
             "agent_pos": np.array(self._encode_position(self.agent_pos), dtype=np.uint8),
-            "agent_orient": np.array([self.agent_orient], dtype=np.uint8),
+            "agent_orient": np.array(orient_vec, dtype=np.float32),
             "dirt_map": np.array(self.dirt_map, dtype=np.uint8),
-            "local_view": np.array(self._compute_local_view(), dtype=np.uint8),
-            "known_obstacle_map": np.array(self.known_obstacle_map, dtype=np.uint8)
+            "obstacle_map": np.array(self.obstacle_map, dtype=np.uint8)
         }
 
     def _update_local_view(self):
@@ -277,13 +280,12 @@ class VacuumEnv(gym.Env):
         elif action == 1: # rotate left
             self.agent_orient = (self.agent_orient - 1) % 8
             reward += self.penalty_rotation # rotation cost
-            self._update_local_view() # after rotation, can also update local knowledge
+            #self._update_local_view() # after rotation, can also update local knowledge
 
         elif action == 2: # rotate right
             self.agent_orient = (self.agent_orient + 1) % 8
             reward += self.penalty_rotation # rotation cost
-            self._update_local_view() # after rotation, can also update local knowledge
-
+            #self._update_local_view() # after rotation, can also update local knowledge
 
         self._update_local_view() # update local knowledge after action
 
@@ -292,7 +294,7 @@ class VacuumEnv(gym.Env):
         # update the grids status
         if self.dirt_map[x, y] == 1:
             reward += self.reward_clean_tile
-            self.cleaned_map[x, y] = 1
+        self.cleaned_map[x, y] = 1
         self.dirt_map[x, y] = 0
         self.path_map[x, y] += 1
         if self.path_map[x, y] >= 127:
@@ -379,8 +381,7 @@ class WrappedVacuumEnv:
         env = gym.make("VacuumEnv-v0", grid_size=self.grid_size, dirt_num=self.dirt_num)
         env = TimeLimit(env, max_episode_steps=self.max_steps)
         if self.algo == "ppo":
-            env = ExplorationBonusWrapper(env)
-            env = ExploitationPenaltyWrapper(env)
+            env = PPOExplorationWrapper(env)
         elif self.algo == "dqn":
             env = DQNExplorationWrapper(env)
         env = MetricWrapper(env)
@@ -391,4 +392,40 @@ class WrappedVacuumEnv:
         self.base_env = env
         return env
 
+class GridFeatureExtractor(BaseFeaturesExtractor):
+    def __init__(self, observation_space, features_dim=256):
+        super().__init__(observation_space, features_dim)
+
+        grid_shape = observation_space['dirt_map'].shape
+        self.grid_h, self.grid_w = grid_shape
+
+        self.cnn = nn.Sequential(
+            nn.Conv2d(in_channels=4, out_channels=16, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(16, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Flatten()
+        )
+
+        with torch.no_grad():
+            sample_input = torch.zeros(1, 4, self.grid_h, self.grid_w)
+            n_flatten = self.cnn(sample_input).shape[1]
+
+        self.linear = nn.Sequential(
+            nn.Linear(n_flatten + 2, features_dim),
+            nn.ReLU()
+        )
+
+    def forward(self, obs):
+        spatial_maps = torch.stack([
+            obs["start_pos"],
+            obs["agent_pos"],
+            obs["dirt_map"],
+            obs["obstacle_map"]
+        ], dim=1).float()
+
+        cnn_out = self.cnn(spatial_maps)
+        orient = obs["agent_orient"].float()
+
+        return self.linear(torch.cat([cnn_out, orient], dim=1))
 

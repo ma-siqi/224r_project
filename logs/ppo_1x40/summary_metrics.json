@@ -1,0 +1,22 @@
+{
+    "episode_length": {
+        "mean": 290.2,
+        "std": 112.1024531399737
+    },
+    "episode_reward": {
+        "mean": 13716.422399999992,
+        "std": 1463.0686598589439
+    },
+    "coverage_ratio": {
+        "mean": 1.0,
+        "std": 0.0
+    },
+    "revisit_ratio": {
+        "mean": 0.49367088607594944,
+        "std": 5.551115123125783e-17
+    },
+    "redundancy_ratio": {
+        "mean": 1.975,
+        "std": 0.0
+    }
+}
